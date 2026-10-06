@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-10-07
+
+### Changed
+- The move list holds its full height from the first move, so the divider and the player below it no longer move as the game goes on.
+- Claude's spend moved to the top row, right of the menu: this game's spend in a casual game, the tournament's spend against its cap in a tournament.
+- The end-of-game note fits in two lines, so the sidebar never grows past the board when a game ends.
+
 ## [0.1.0] - 2026-10-07
 
 ### Added

@@ -1,6 +1,6 @@
 # chessus!
 
-![tests](https://img.shields.io/badge/tests-69%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.0-blue)
+![tests](https://img.shields.io/badge/tests-70%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.1-blue)
 
 chessus! is chess inside Claude Code. Play Claude, watch two Claude models play each other, run a tournament between them, or replay famous games. Every side is either you or a Claude model at the effort you pick.
 
@@ -54,7 +54,7 @@ If your terminal passes mouse clicks to Claude Code, you can also click a piece,
 
 The top row has four places, plus standings while a tournament runs:
 
-- **board**: the game. The board is on the left. The sidebar shows the mode (CASUAL GAME, TOURNAMENT, or REPLAY), both players and their clocks, `»` next to whoever is to move, and the moves so far. Under that sits STATUS: whose turn it is, the move box, and when a game ends, a GAME OVER banner with who won and how. Claude's spend sits at the bottom, level with the board.
+- **board**: the game. The board is on the left. The sidebar shows the mode (CASUAL GAME, TOURNAMENT, or REPLAY), both players and their clocks, `»` next to whoever is to move, and the moves so far. The move list keeps its full height from the first move, so nothing below it shifts as the game goes on. Under it sits STATUS: whose turn it is, the move box, and when a game ends, a GAME OVER banner with who won and how. Claude's spend shows at the top right, with the budget cap in a tournament.
 - **new game**: switch between Casual game and Tournament, set up the sides or players, and adjust this game's options (time control, rules, Claude's clock, switching the opponent mid-game, tournament format). They start at your default settings. Starting over a game in progress asks first, and keeps the old game under replays.
 - **replays**: famous games, online search, and everything you've played or imported. Open a saved game and press `x` to delete it, or delete them all from the bottom of the list. Both ask first.
 - **settings**: your defaults for new games: time control, rules, Claude's clock, pace for Claude vs Claude, tournament format and budget cap.
@@ -63,7 +63,7 @@ Pickers are arrow buttons, `‹ value ›`. Click them, or Tab to one and press 
 
 ## Keys
 
-With the pane focused. The key row under the board only shows what fits the moment.
+With the pane focused. If your keys keep going to Claude Code's prompt instead, press ctrl+x then Tab to move focus to the pane; Esc moves it back. The key row under the board only shows what fits the moment.
 
 During a game:
 
