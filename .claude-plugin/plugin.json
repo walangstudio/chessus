@@ -1,0 +1,8 @@
+{
+  "name": "chessus",
+  "version": "0.1.0",
+  "description": "Play chess against Claude inside Claude Code: pick the model and effort, review every game move by move",
+  "author": { "name": "walangstudio" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
