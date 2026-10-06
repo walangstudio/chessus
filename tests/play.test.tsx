@@ -63,7 +63,7 @@ test('a round-robin runs every game, and the budget cap pauses it', async ($, on
   expect(await ui.find({ type: 'Text', text: /3 games/ })).toBeDefined()
   await ui.press({ key: 'start-tournament' })
   for (let i = 0; i < 20; i++) await clock.advance(500)
-  expect(await ui.find({ type: 'Text', text: /Tournament over\. Winner: / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Saved\. Winner: / })).toBeDefined()
   await tournamentSetup(ui)
   expect(await ui.find({ type: 'Text', text: /Last tournament #1 finished/ })).toBeDefined()
 

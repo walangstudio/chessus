@@ -57,8 +57,9 @@ const CHROME_ROWS = 7
 // What the pane asks for when it opens: room for the 7x3 board and the sidebar. The person's own resize wins.
 const PANE_ROWS = 8 * 3 + CHROME_ROWS
 const PANE_COLUMNS = 8 * 7 + BESIDE_BOARD
-// Sidebar rows that are not moves: mode header, 2 player lines, 2 rules, gap, STATUS label, status, move box, note, spend.
-const SIDEBAR_FIXED_ROWS = 11
+// Sidebar rows that are not moves, worst case: mode header, 2 player lines, 2 rules, gap, STATUS label, status,
+// then two rows that are the move box and a note during play, or the outcome and its follow-up line once it ends.
+const SIDEBAR_FIXED_ROWS = 10
 const SWITCH_ROWS = 2
 // The store holds 4 MiB in all; the library keeps well under it so settings, costs and the live game always fit.
 const LIBRARY_BYTES = 3_000_000
@@ -837,8 +838,14 @@ export const register: Register = on => {
       { screen: 'settings', label: 'settings' },
       ...(isTourActive ? [{ screen: 'tournament' as const, label: 'standings' }] : []),
     ]
+    const tourGame = g && t && g.event === eventOf(t) ? t : null
+    // The last game of a finished tournament still shows that tournament's total against its cap.
+    const hasClaude = !!g && (g.white.kind === 'claude' || g.black.kind === 'claude')
+    const spend = view.screen !== 'game' || view.review || !g || !hasClaude ? null
+      : tourGame ? `Claude $${tourGame.spentUsd.toFixed(2)} / $${tourGame.budgetUsd} cap`
+        : `Claude $${g.spentUsd.toFixed(3)} · no cap`
     const nav = (
-      <Box>
+      <Box width="100%">
         {tabs.map((tab, i) => (
           <Button
             key={`nav-${tab.screen}`}
@@ -853,6 +860,8 @@ export const register: Register = on => {
           if (isLiveCasual(live) && !live.isPaused) await setView($, { screen: 'game', review: null, ply: null, confirm: 'close' })
           else await closePane($, false)
         }} />
+        <Box flexGrow={1} />
+        {spend && <Text dimColor wrap="truncate-end">{spend}</Text>}
       </Box>
     )
     const page = (...children: RenderChildren[]) => (
@@ -1218,10 +1227,9 @@ export const register: Register = on => {
     const afterGame = !isOver ? []
       : [
           outcome(result, termination, label('w'), label('b')),
-          'Saved to replays.',
-          ...(isCasual ? [] : [t?.status === 'running' ? 'Next tournament game starts shortly.'
-            : t?.status === 'paused' ? 'Tournament paused.'
-              : `Tournament over. Winner: ${leaderName}.`]),
+          isCasual ? 'Saved to replays.' : t?.status === 'running' ? 'Saved. Next game starts shortly.'
+            : t?.status === 'paused' ? 'Saved. Tournament paused.'
+              : `Saved. Winner: ${leaderName}.`,
         ]
 
     const canSwitch = isCasual && live.result === '*' && (live.canSwitchOpponent ?? settings.canSwitchOpponent) && opponent?.kind === 'claude' && hasFields
@@ -1264,6 +1272,9 @@ export const register: Register = on => {
             {moveText(p.b, (p.n - 1) * 2 + 1)}
           </Box>
         ))}
+        {Array.from({ length: Math.max(0, moveRows - shownPairs.length - (history.length === 0 ? 1 : 0)) }, (_, i) => (
+          <Text key={`pad-${i}`}> </Text>
+        ))}
         {rule}
         {head(other(top))}
         <Box flexDirection="column" marginTop={1}>
@@ -1288,7 +1299,6 @@ export const register: Register = on => {
         {canSwitch && opponent?.kind === 'claude' && select('opponent-model', 'Opponent', opponent.model, MODELS, v => switchOpponent({ model: v }))}
         {canSwitch && opponent?.kind === 'claude' && select('opponent-effort', 'Effort', opponent.effort, EFFORTS.map(value => ({ value })), v =>
           switchOpponent({ effort: EFFORTS.find(x => x === v) ?? opponent.effort }))}
-        {!review && live.spentUsd > 0 && <Text dimColor>{`Claude spend $${live.spentUsd.toFixed(3)}`}</Text>}
       </Box>
     )
 
