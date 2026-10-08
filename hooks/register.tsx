@@ -64,7 +64,7 @@ const CASUAL_RETRIES = 3
 const UNREADABLE_RETRIES = 3
 
 const SONNET: Side = { kind: 'claude', model: 'claude-sonnet-5-5', effort: 'medium' }
-const DEFAULT_PREFS: Prefs = { tcId: 'untimed', rules: 'standard', isClaudeClocked: true, isDouble: false, budgetUsd: 5, spectateMs: 1000, canSwitchOpponent: false }
+const DEFAULT_PREFS: Prefs = { tcId: 'untimed', rules: 'standard', isClaudeClocked: true, isDouble: false, budgetUsd: 5, spectateMs: 1000, replayMs: 1000, canSwitchOpponent: false }
 const DEFAULT_VIEW: View = {
   screen: 'setup', ply: null, isFlipped: false,
   draft: { white: { kind: 'human' }, black: SONNET },
@@ -160,13 +160,73 @@ const loadCosts = async ($: EngineInterface) => ((await $.store.get(COSTS_KEY)) 
 
 const patchTour = ($: EngineInterface, fn: (t: Tournament) => Partial<Tournament>) => update($, tourA, t => t && { ...t, ...fn(t) })
 
+// Any view change by hand (a step, another screen, closing the replay) stops autoplay; autoplay moves the ply itself
+// through update(), never through here.
 const setView = ($: EngineInterface, patch: Partial<View>) =>
   update($, viewA, v => ({
     ...v,
     ...('screen' in patch || 'review' in patch ? { confirm: null } : {}),
+    ...('screen' in patch || 'review' in patch || 'ply' in patch || 'confirm' in patch ? { autoplay: null } : {}),
     ...('screen' in patch && patch.screen !== 'library' && v.screen === 'library' ? { found: [], searchNote: '' } : {}),
     ...patch,
   }))
+
+const REPLAY_SPEEDS = [250, 500, 1000, 2000, 5000]
+const speedLabel = (ms: number) => `${ms / 1000}s a move`
+const shownHistory = async ($: EngineInterface, v: View) => (v.review ? v.review.history : (await read($, gameA))?.history ?? [])
+let autoplaySeq = 0
+
+const isPaneShown = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
+const scheduleAutoplay = async ($: EngineInterface, token: number) =>
+  $.clock.after((await read($, settingsA)).replayMs, () => void autoplayStep($, token))
+
+// The replay on screen steps itself forward at the replay speed until its end, while its token is the view's and the
+// pane is shown. A view change by hand clears the token, so a pending step finds it gone.
+const autoplayStep = async ($: EngineInterface, token: number) => {
+  const v = await read($, viewA)
+  if (v.autoplay !== token) return
+  if (!(await isPaneShown($))) return update($, viewA, x => (x.autoplay === token ? { ...x, autoplay: null } : x))
+  const history = await shownHistory($, v)
+  let isMore = false
+  await update($, viewA, x => {
+    isMore = false
+    if (x.autoplay !== token) return x
+    const next = Math.min((x.ply ?? history.length) + 1, history.length)
+    isMore = next < history.length
+    return { ...x, ply: isMore || x.review ? next : null, autoplay: isMore ? token : null }
+  })
+  if (isMore) await scheduleAutoplay($, token)
+}
+
+const toggleAutoplay = async ($: EngineInterface) => {
+  const v = await read($, viewA)
+  const history = await shownHistory($, v)
+  const shown = (x: View) => `${x.screen}|${JSON.stringify(x.review)}`
+  const token = ++autoplaySeq
+  let isStarted = false
+  await update($, viewA, x => {
+    isStarted = false
+    if (x.autoplay) return { ...x, autoplay: null }
+    // Started only on the replay it was pressed in; from the end it plays again from the start.
+    if (shown(x) !== shown(v)) return x
+    isStarted = true
+    return { ...x, ply: x.ply === null || x.ply >= history.length ? 0 : x.ply, autoplay: token }
+  })
+  if (isStarted) await scheduleAutoplay($, token)
+}
+
+// A new speed applies at once: a running autoplay takes a new token, which drops the step pending at the old speed.
+const cycleReplaySpeed = async ($: EngineInterface) => {
+  const ms = (await read($, settingsA)).replayMs
+  await setSettings($, { replayMs: REPLAY_SPEEDS[(REPLAY_SPEEDS.indexOf(ms) + 1) % REPLAY_SPEEDS.length]! })
+  const token = ++autoplaySeq
+  let isRunning = false
+  await update($, viewA, x => {
+    isRunning = !!x.autoplay
+    return isRunning ? { ...x, autoplay: token } : x
+  })
+  if (isRunning) await scheduleAutoplay($, token)
+}
 
 // M4: the library is capped by count and by size, oldest out first; a full store never blocks the caller.
 const saveGames = async ($: EngineInterface, added: SavedGame[]) => {
@@ -244,7 +304,7 @@ const resignGame = async ($: EngineInterface) => {
 
 const closePane = async ($: EngineInterface, isPausing: boolean) => {
   if (isPausing) await pauseGame($)
-  await setView($, { confirm: null })
+  await setView($, { confirm: null, autoplay: null })
   await $.ui.close({ id: PANE })
 }
 
@@ -431,7 +491,7 @@ const startGame = async ($: EngineInterface, o: Omit<NewGame, 'id'>, screen: Scr
   await update($, nowA, () => now)
   await saveLive($)
   if (screen !== null) await setView($, { screen, ply: null, review: null, isFlipped: g.white.kind !== 'human' && g.black.kind === 'human' })
-  else await update($, viewA, v => (v.review ? v : { ...v, ply: null }))
+  else await update($, viewA, v => (v.review ? v : { ...v, ply: null, autoplay: null }))
   kick($, 0)
   return true
 }
@@ -800,7 +860,7 @@ export const register: Register = on => {
       return { text }
     }
     if (word === 'help') return { text: HELP }
-    if (['keys', 'key', 'set'].includes(word) && !(await $.ui.panes()).some(p => p.id === PANE && p.isShown)) controls.clear()
+    if (['keys', 'key', 'set'].includes(word) && !(await isPaneShown($))) controls.clear()
     if (word === 'keys') {
       if (!controls.size) return open('Chessus opened. Run /chess keys again to list what it shows.')
       const rows = [...controls].map(([k, c]) => (c.kind === 'key' ? `key ${k}: ${c.label}` : `set ${k}: ${c.label}${c.options ? ` (${c.options.join(', ')})` : ' <text>'}`))
@@ -1047,6 +1107,8 @@ export const register: Register = on => {
             v => setSettings($, { rules: v === 'casual' ? 'casual' : 'standard' }), { ...field, hint: 'What happens when Claude plays an illegal move.' }),
           select('switch', 'Opponent mid-game', settings.canSwitchOpponent ? 'on' : 'off', [{ value: 'off', label: 'Fixed for the game' }, { value: 'on', label: 'Switchable from the board' }],
             v => setSettings($, { canSwitchOpponent: v === 'on' }), { ...field, hint: "Change Claude's model and effort during a casual game." }),
+          select('replay-speed', 'Replay speed', String(settings.replayMs), REPLAY_SPEEDS.map(ms => ({ value: String(ms), label: speedLabel(ms) })),
+            v => setSettings($, { replayMs: Number(v) }), { ...field, hint: 'How fast a replay plays itself (p in a replay; s changes it there too).' }),
         ),
         section('Claude',
           select('clock', 'Claude clock', settings.isClaudeClocked ? 'on' : 'off', [{ value: 'on', label: 'Thinking time counts' }, { value: 'off', label: 'Paused while Claude thinks' }],
@@ -1433,6 +1495,18 @@ export const register: Register = on => {
     const key = (k: string, hotkey: string, text: string, onPress: () => unknown) => (
       <Button key={k} plain hotkey={hotkey} label={`${text}  `} onPress={() => onPress()} />
     )
+    // Replays and finished games step the same way; only where the end is differs (a finished game's end is live).
+    const replayRow = (title: string, end: number | null) => (
+      <Box>
+        <Text dimColor>{title}</Text>
+        {key('first', 'a', '⏮ start', () => setView($, { ply: 0 }))}
+        {key('prev', 'b', '◀ back', () => step(-1))}
+        {key('next', 'f', 'forward ▶', () => step(1))}
+        {key('last', 'e', 'end ⏭', () => setView($, { ply: end }))}
+        {key('autoplay', 'p', view.autoplay ? '⏸ stop' : '▶ play', () => toggleAutoplay($))}
+        {key('replay-speed', 's', speedLabel(settings.replayMs), () => cycleReplaySpeed($))}
+      </Box>
+    )
     const keys =
       view.confirm === 'resign' ? (
         <Box>
@@ -1470,13 +1544,7 @@ export const register: Register = on => {
         // game actions for a game in progress.
         review ? (
           <Box flexDirection="column">
-            <Box>
-              <Text dimColor>{'Replay   '}</Text>
-              {key('first', 'a', '⏮ start', () => setView($, { ply: 0 }))}
-              {key('prev', 'b', '◀ back', () => step(-1))}
-              {key('next', 'f', 'forward ▶', () => step(1))}
-              {key('last', 'e', 'end ⏭', () => setView($, { ply: history.length }))}
-            </Box>
+            {replayRow('Replay   ', history.length)}
             <Box>
               <Text dimColor>{'         '}</Text>
               {review.resume && review.result === '*' && key('resume-saved', 'r', 'resume this game', async () => {
@@ -1492,13 +1560,7 @@ export const register: Register = on => {
           </Box>
         ) : isOver ? (
           <Box flexDirection="column">
-            <Box>
-              <Text dimColor>{'Review   '}</Text>
-              {key('first', 'a', '⏮ start', () => setView($, { ply: 0 }))}
-              {key('prev', 'b', '◀ back', () => step(-1))}
-              {key('next', 'f', 'forward ▶', () => step(1))}
-              {key('last', 'e', 'end ⏭', () => setView($, { ply: null }))}
-            </Box>
+            {replayRow('Review   ', null)}
             <Box>
               <Text dimColor>{'Next     '}</Text>
               {!isTourActive && key('new-game', 'n', 'new game', () => setView($, { screen: 'setup' }))}

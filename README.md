@@ -1,6 +1,6 @@
 # chessus!
 
-![tests](https://img.shields.io/badge/tests-80%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.2-blue)
+![tests](https://img.shields.io/badge/tests-82%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.3-blue)
 
 chessus! is chess inside Claude Code. Play Claude, watch two Claude models play each other, run a tournament between them, or replay famous games. Every side is either you or a Claude model at the effort you pick.
 
@@ -61,7 +61,7 @@ The top row has four places, plus standings while a tournament runs:
 - **board**: the game. The board is on the left. The sidebar shows the mode (CASUAL GAME, TOURNAMENT, or REPLAY), both players and their clocks, `»` next to whoever is to move, and the moves so far. The move list keeps its full height from the first move, so nothing below it shifts as the game goes on. Under it sits STATUS: whose turn it is, and when a game ends, a GAME OVER banner with who won and how. Claude's spend shows under the game keys, with the budget cap in a tournament.
 - **new game**: switch between Casual game and Tournament, set up the sides or players, and adjust this game's options (time control, rules, Claude's clock, switching the opponent mid-game, tournament format). They start at your default settings. Starting over a game in progress asks what happens to it: abandon it (it stays under replays to watch, not to continue), keep it to resume later from replays, or cancel.
 - **replays**: famous games, online search, and everything you've played or imported. Open a saved game and press `x` to delete it, or delete them all from the bottom of the list. Both ask first.
-- **settings**: your defaults for new games: time control, rules, Claude's clock, pace for Claude vs Claude, tournament format and budget cap.
+- **settings**: your defaults for new games: time control, rules, Claude's clock, pace for Claude vs Claude, replay speed, tournament format and budget cap.
 
 Pickers are arrow buttons, `‹ value ›`. Click them, or Tab to one and press Enter.
 
@@ -87,6 +87,8 @@ Replays, and a game that just ended:
 | Key | Does |
 | --- | --- |
 | `a` `b` `f` `e` | start, back, forward, end |
+| `p` | play the replay by itself, or stop it |
+| `s` | replay speed: 0.25s, 0.5s, 1s, 2s or 5s a move (also in settings) |
 | `r` | resume, for a game you saved mid-play |
 | `n` | new game, after a game ends |
 | `t` | tournament standings |
