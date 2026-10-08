@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { CLASSICS, classicPgn } from '../hooks/classics'
-import { PANE, choose, engine, scripted } from './kit'
+import { PANE, choose, engine, panes, scripted } from './kit'
 
 const START = { cwd: '.', surface: 'terminal', isInteractive: true } as const
 const RUN = { command: 'chess', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -16,6 +16,94 @@ test('the replays screen lists the classics, Cardoso vs Fischer included, and op
   expect(await ui.find({ type: 'Text', text: /^REPLAY$/ })).toBeDefined()
   await ui.press({ key: 'last' })
   expect(await ui.find({ type: 'Text', text: /^Move 79 of 79 · 1-0/ })).toBeDefined()
+})
+
+test('a replay plays itself at the replay speed; s changes the speed, a manual step stops it, and from the end it starts over', async ($, on) => {
+  const clock = engine(on, scripted([]))
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'nav-library' })
+  await ui.press({ key: 'classic-cardoso-fischer' })
+  await ui.press({ key: 'autoplay' })
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /stop/ })).toBeDefined()
+  await clock.advance(1000)
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^Move 2 of 79/ })).toBeDefined()
+
+  // The new speed applies to the very next move.
+  await ui.press({ key: 'replay-speed' })
+  expect(await ui.find({ type: 'Button', key: 'replay-speed', text: /2s a move/ })).toBeDefined()
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^Move 2 of 79/ })).toBeDefined()
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^Move 3 of 79/ })).toBeDefined()
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /^Move 4 of 79/ })).toBeDefined()
+
+  // Back then forward lands on the same move, and still stops it at once.
+  await ui.press({ key: 'prev' })
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
+  await ui.press({ key: 'next' })
+  for (let i = 0; i < 3; i++) await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /^Move 4 of 79/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
+
+  // Stopping with p mid-replay, then playing again, carries on from there.
+  await ui.press({ key: 'autoplay' })
+  await ui.press({ key: 'autoplay' })
+  await ui.press({ key: 'autoplay' })
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /^Move 5 of 79/ })).toBeDefined()
+
+  await ui.press({ key: 'last' })
+  await ui.press({ key: 'autoplay' })
+  expect(await ui.find({ type: 'Text', text: /^Move 0 of 79/ })).toBeDefined()
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /^Move 1 of 79/ })).toBeDefined()
+  await ui.press({ key: 'nav-settings' })
+  expect(await ui.find({ type: 'Button', key: 'replay-speed-value', text: /2s a move/ })).toBeDefined()
+})
+
+test('a finished game plays itself back to its end; leaving it or hiding the pane stops autoplay', async ($, on) => {
+  const clock = engine(on, scripted(['f6', 'g5']))
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  for (const move of ['e4', 'd4', 'Qh5#']) {
+    await $.command.run({ ...RUN, args: `move ${move}` })
+    for (let i = 0; i < 4; i++) await clock.advance(500)
+  }
+  expect(await ui.find({ type: 'Text', text: /^ GAME OVER $/ })).toBeDefined()
+  await ui.press({ key: 'autoplay' })
+  expect(await ui.find({ type: 'Text', text: /^ Viewing move 0 of 5 $/ })).toBeDefined()
+  for (let i = 0; i < 5; i++) await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^ GAME OVER $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
+
+  await ui.press({ key: 'autoplay' })
+  await ui.press({ key: 'nav-library' })
+  await ui.press({ key: 'nav-game' })
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
+
+  await ui.press({ key: 'first' })
+  await ui.press({ key: 'autoplay' })
+  panes.isOpen = false
+  await clock.advance(1000)
+  panes.isOpen = true
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^ Viewing move 0 of 5 $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
+
+  // A confirm prompt stops it too: the saved copy does not move on under "Delete ...?".
+  await ui.press({ key: 'nav-library' })
+  await ui.press({ key: 'lib-0' })
+  await ui.press({ key: 'autoplay' })
+  await ui.press({ key: 'delete' })
+  await clock.advance(1000)
+  await ui.press({ key: 'delete-no' })
+  expect(await ui.find({ type: 'Text', text: /^Move 0 of 5/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'autoplay', text: /play/ })).toBeDefined()
 })
 
 test('searching official events lists them, and picking one downloads its games', async ($, on) => {

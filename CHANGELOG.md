@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-10-08
+
+### Added
+- Replay autoplay: `p` plays a replay or a finished game by itself, or stops it. From the end it starts over. A manual step, a confirm prompt, leaving the replay or hiding the pane stops it.
+- Replay speed, 0.25s to 5s a move: `s` cycles it in a replay and applies to the next move, or set it in settings. It persists.
+
 ## [0.1.2] - 2026-10-08
 
 ### Added

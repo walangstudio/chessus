@@ -55,6 +55,8 @@ export type Prefs = {
   isDouble: boolean
   budgetUsd: number
   spectateMs: number
+  // Time between moves when a replay plays itself.
+  replayMs: number
   canSwitchOpponent: boolean
 }
 
@@ -71,6 +73,8 @@ export type View = {
   entrants: Side[]
   pick: { model: string; effort: Effort }
   review: Review | null
+  // The running autoplay's token, so a stale timer chain stops; null when the replay is not playing itself.
+  autoplay?: number | null
   confirm?: 'resign' | 'close' | 'replace' | 'resume' | 'delete' | 'clear' | null
   newMode?: 'casual' | 'tournament'
   found?: { id: string; name: string }[]
