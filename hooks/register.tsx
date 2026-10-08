@@ -112,17 +112,33 @@ export const formatClock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+// Why no Claude call may be made for this game now: it is paused or over, or its tournament is paused or at its cap.
+const heldBy = async ($: EngineInterface, gameId: number) => {
+  const g = await read($, gameA)
+  if (!g || g.id !== gameId || g.result !== '*') return 'The game is over.'
+  if (g.isPaused) return 'The game is paused.'
+  const t = await read($, tourA)
+  if (!isTournamentGame(g, t)) return ''
+  if (t.spentUsd >= t.budgetUsd) return `Budget of $${t.budgetUsd} reached.`
+  return t.status === 'running' ? '' : 'The tournament is paused.'
+}
+
+// Every Claude call goes through here, so nothing is spent while the game is held. The check sits right before the call.
 const complete = async ($: EngineInterface, g: Game, c: Color, prompt: string, timeoutMs: number) => {
   const side = sideOf(g, c)
   if (side.kind !== 'claude') throw new Error('not a Claude side')
   // Claude Code prices at the managed modelPricing only; a project's settings cannot change what it bills.
   const pricing = await $.settings.read({ source: 'policy' }).then(p => p.modelPricing, () => undefined)
+  const held = await heldBy($, g.id)
+  if (held) return { held }
   const r = await $.model.complete({ model: side.model, effort: side.effort, prompt, maxTokens: 16_000, timeoutMs })
   return { r, usd: priceUsd(side.model, r.usage, pricing) }
 }
 
 const askMove = async ($: EngineInterface, g: Game, c: Color, retry: string, timeoutMs: number) => {
-  const { r, usd } = await complete($, g, c, movePrompt(g, c, retry), timeoutMs)
+  const res = await complete($, g, c, movePrompt(g, c, retry), timeoutMs)
+  if (!res.r) return { held: res.held ?? '' }
+  const { r, usd } = res
   if (!r.isAnswered) return { ask: { kind: 'error', reason: r.reason } as Ask, usd }
   if (r.text.trim() === '') return { ask: { kind: 'error', reason: 'empty reply' } as Ask, usd }
   const san = pickMove(r.text, replay(g.history).moves())
@@ -132,8 +148,9 @@ const askMove = async ($: EngineInterface, g: Game, c: Color, retry: string, tim
 }
 
 const askDraw = async ($: EngineInterface, g: Game, c: Color) => {
-  const { r, usd } = await complete($, g, c, drawPrompt(g, c), 120_000)
-  return { isAccepted: r.isAnswered && isAcceptance(r.text), usd }
+  const res = await complete($, g, c, drawPrompt(g, c), 120_000)
+  if (!res.r) return { held: res.held ?? '' }
+  return { isAccepted: res.r.isAnswered && isAcceptance(res.r.text), usd: res.usd }
 }
 
 const loadGames = async ($: EngineInterface) => ((await $.store.get('games')) as SavedGame[] | undefined) ?? []
@@ -329,11 +346,6 @@ const claudeTurn = async ($: EngineInterface) => {
   const c = turnOf(g)
   const side = sideOf(g, c)
   if (side.kind !== 'claude') return
-  const t = await read($, tourA)
-  if (isTournamentGame(g, t) && t.status === 'running' && t.spentUsd >= t.budgetUsd) {
-    await pauseTournament($, `Budget of $${t.budgetUsd} reached. Raise it in Settings, then resume.`)
-    return
-  }
   const token = `${g.id}:${g.history.length}:${Math.random()}`
   await update($, gameA, s => (s && s.id === g.id && !s.thinking && s.history.length === g.history.length ? { ...s, thinking: token } : s))
 
@@ -353,19 +365,27 @@ const askUntilMoved = async (
   let errors = 0
   let casualMisses = 0
   let unreadable = 0
+  const release = () => update($, gameA, s => (isMine(s) ? { ...s, thinking: '' } : s))
   for (;;) {
     const before = await read($, gameA)
     if (!isMine(before)) return
     const now = await $.clock.now()
     const timeoutMs = isClockRunning(before, c) ? Math.max(1000, remaining(before, c, now) + 500) : 600_000
-    const { ask, usd } = await askMove($, before, c, retry, timeoutMs)
+    const asked = await askMove($, before, c, retry, timeoutMs)
+    if (!asked.ask) {
+      // A move at the cap pauses the tournament, freezing the game before the turn is let go so the ticker starts no other
+      // call. Only moves pause it: a draw offer pausing would throw away a paid move call already under way.
+      const t = await read($, tourA)
+      if (isTournamentGame(before, t) && t.status === 'running' && t.spentUsd >= t.budgetUsd) {
+        await pauseTournament($, `${asked.held} Raise it in Settings, then resume.`)
+      }
+      return release()
+    }
+    const { ask, usd } = asked
     await spend($, g.id, side, usd, ask.kind === 'move')
     const cur = await read($, gameA)
     if (!isMine(cur)) return
-    if (cur.isPaused) {
-      await update($, gameA, s => (isMine(s) ? { ...s, thinking: '' } : s))
-      return
-    }
+    if (cur.isPaused) return release()
     const at = await $.clock.now()
 
     if (ask.kind === 'move') {
@@ -545,8 +565,13 @@ const offerDraw = async ($: EngineInterface) => {
   if (!g || !me || g.result !== '*') return
   const opponent = sideOf(g, other(me))
   if (opponent.kind !== 'claude') return
+  const decline = (why: string) => update($, gameA, s => (s && s.id === g.id ? { ...s, note: `No draw offer sent. ${why}` } : s))
+  const held = await heldBy($, g.id)
+  if (held) return decline(held)
   await update($, gameA, s => (s && s.id === g.id ? { ...s, note: `Offered a draw to ${nameOf(opponent)}...` } : s))
-  const { isAccepted, usd } = await askDraw($, g, other(me))
+  const res = await askDraw($, g, other(me))
+  if (res.held !== undefined) return decline(res.held)
+  const { isAccepted, usd } = res
   await spend($, g.id, opponent, usd, false)
   const cur = await read($, gameA)
   if (!cur || cur.id !== g.id || cur.result !== '*') return
@@ -1492,7 +1517,7 @@ export const register: Register = on => {
             {isCasual && key('pause', 'p', live.isPaused ? 'resume' : 'pause', () => (live.isPaused ? resumeGame($) : pauseGame($)))}
             {isCasual && key('save', 's', 'save to resume', async () => $.ui.toast((await saveToResume($)).text))}
             <Button key="copy" plain hotkey="c" label="copy PGN  " onPress={p => void $.ui.copy({ text: pgn, surface: p.surface })} />
-            {me && opponent?.kind === 'claude' && key('draw', 'd', 'offer draw', () => offerDraw($))}
+            {me && !live.isPaused && opponent?.kind === 'claude' && key('draw', 'd', 'offer draw', () => offerDraw($))}
             {me && turnOf(live) === me && claimable(live) && key('claim', 'm', 'claim draw', async () => {
               const cur = await read($, gameA)
               if (cur) await finish($, claimDraw(cur))

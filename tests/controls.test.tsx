@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { HAIKU, PANE, answer, asked, choose, engine, fillStore, gate, panes, scripted, toasts, tournamentSetup } from './kit'
+import { HAIKU, PANE, answer, asked, choose, engine, fillStore, gate, managed, panes, scripted, toasts, tournamentSetup } from './kit'
 
 const START = { cwd: '.', surface: 'terminal', isInteractive: true } as const
 const RUN = { command: 'chess', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -329,6 +329,18 @@ test("Claude's spend is priced from each reply's tokens, not the session total",
   expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.020 · no cap$/ })).toBeDefined()
 })
 
+test("Claude's spend follows the managed modelPricing: contracted rates, then the multiplier", async ($, on) => {
+  const clock = engine(on, scripted(['e5']))
+  managed.modelPricing = { multiplier: 0.5, overrides: { 'claude-sonnet-5-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } }
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  // 10,000 input tokens at the contracted $3/MTok, halved.
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.015 · no cap$/ })).toBeDefined()
+})
+
 test('Claude spend sits under the game keys: casual games say no cap, tournament games show the cap', async ($, on) => {
   const g = gate()
   const clock = engine(on, g.wait)
@@ -346,5 +358,5 @@ test('Claude spend sits under the game keys: casual games say no cap, tournament
   await clock.advance(100)
   expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.00 \/ \$5 cap$/ })).toBeDefined()
   await ui.press({ key: 'nav-settings' })
-  expect(await ui.find({ type: 'Text', text: /^Claude \$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$/ })).toBeUndefined()
 })

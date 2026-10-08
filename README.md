@@ -1,6 +1,6 @@
 # chessus!
 
-![tests](https://img.shields.io/badge/tests-77%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.2-blue)
+![tests](https://img.shields.io/badge/tests-80%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.2-blue)
 
 chessus! is chess inside Claude Code. Play Claude, watch two Claude models play each other, run a tournament between them, or replay famous games. Every side is either you or a Claude model at the effort you pick.
 
@@ -155,7 +155,7 @@ FIDE Laws of Chess, using [chess.js](https://github.com/jhlywa/chess.js) for mov
 
 2 to 8 players, any mix of you and Claude models. Single or double round-robin (double plays each pairing twice, colours swapped), with colours balanced. Standings score 1, ½ and 0, broken by Sonneborn-Berger, then head-to-head, then wins.
 
-Claude costs money, so tournaments have a budget cap ($5 by default). When Claude's spend reaches it the tournament pauses. Raise the cap in settings and resume. Before you start, you get an estimate based on what each model and effort has cost you so far.
+Claude costs money, so tournaments have a budget cap ($5 by default). The tournament pauses once Claude's spend reaches it. Spend is checked before each Claude call, moves and draw offers alike, so only a call already under way can take it past the cap. Raise the cap in settings and resume. Before you start, you get an estimate based on what each model and effort has cost you so far.
 
 ## Replays
 

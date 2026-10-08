@@ -2,7 +2,9 @@ import { expect, test } from 'claude-code/testing'
 
 import { hitTest } from '../hooks/board'
 import { boardCell } from '../hooks/register'
-import { HAIKU, PANE, choose, engine, scripted, tournamentSetup } from './kit'
+import { HAIKU, PANE, asked, choose, engine, scripted, tournamentSetup } from './kit'
+
+const RUN = { command: 'chess', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 
 test("Claude vs Claude plays to mate, saves the game, and the library reviews it", async ($, on) => {
   const clock = engine(on, scripted(['f3', 'e5', 'g4', 'Qh4#']))
@@ -74,7 +76,53 @@ test('a round-robin runs every game, and the budget cap pauses it', async ($, on
   for (let i = 0; i < 20; i++) await clock.advance(500)
   await ui.press({ key: 'nav-tournament' })
   expect(await ui.find({ type: 'Text', text: /Budget of \$0.015 reached/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /1\/3 games/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /0\/3 games played · PAUSED/ })).toBeDefined()
+  // $0.01 a Haiku call: the turn's third call is never made, so its retries stop at the cap.
+  expect(await ui.find({ type: 'Text', text: /^Claude spend est\. \$0\.02 of \$0\.015 cap$/ })).toBeDefined()
+})
+
+test('a paused game offers no draw key and makes no Claude call', async ($, on) => {
+  const clock = engine(on, scripted(['e5']))
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  expect(await ui.find({ key: 'draw' })).toBeDefined()
+  await ui.press({ key: 'pause' })
+  expect(await ui.find({ key: 'draw' })).toBeUndefined()
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  expect(asked.length).toBe(0)
+})
+
+test('at the cap, a draw offer makes no Claude call and the next Claude move pauses the tournament', async ($, on) => {
+  const clock = engine(on, () => 'Nc3 Nc6')
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'nav-settings' })
+  await ui.input({ key: 'budget', text: '0.01' })
+  await tournamentSetup(ui)
+  await choose(ui, 'pick-model', 'You')
+  await ui.press({ key: 'add' })
+  await choose(ui, 'pick-model', 'Haiku 4.5')
+  await ui.press({ key: 'add' })
+  await ui.press({ key: 'start-tournament' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  // Round one: you have White.
+  expect(asked.length).toBe(0)
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  // Haiku's Nc6 cost $0.01: the cap is reached on your move, and the tournament still runs.
+  expect(asked.length).toBe(1)
+  await ui.press({ key: 'draw' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  expect(asked.length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /No draw offer sent\. Budget of \$0\.01 reached/ })).toBeDefined()
+  await $.command.run({ ...RUN, args: 'move d4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  expect(asked.length).toBe(1)
+  await ui.press({ key: 'nav-tournament' })
+  expect(await ui.find({ type: 'Text', text: /Budget of \$0.01 reached/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /PAUSED/ })).toBeDefined()
 })
 
 test('the board scales with the pane and a click on a piece then its target moves it', async ($, on) => {

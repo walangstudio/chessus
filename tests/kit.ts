@@ -39,7 +39,9 @@ export const engine = (on: On, reply: (prompt: string) => string | Promise<strin
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   panes.isOpen = true
-  on('settings.read', () => ({ value: {} }))
+  managed.modelPricing = undefined
+  // A project's modelPricing is set too: chessus must read the managed (policy) one only.
+  on('settings.read', (_$, e) => ({ value: e.source === 'policy' ? { ...managed } : { modelPricing: { multiplier: 0.01 } } }))
   on('ui.panes', () => ({
     value: panes.isOpen ? [{ id: 'chessus', title: 'Chessus', isShown: true, isFocused: false, isPlaced: true, plugin: 'chessus', element: '', component: 'Pane' as const }] : [],
   }))
@@ -55,6 +57,8 @@ export const engine = (on: On, reply: (prompt: string) => string | Promise<strin
 export let fillStore = (_key: string) => {}
 // What $.ui.panes answers: the pane open, or (isOpen false) closed.
 export const panes = { isOpen: true }
+// The managed settings' modelPricing, as $.settings.read({ source: 'policy' }) answers it.
+export const managed: { modelPricing?: unknown } = {}
 export const toasts: string[] = []
 export const asked: string[] = []
 
