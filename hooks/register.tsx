@@ -7,7 +7,7 @@ import { drawPrompt, isAcceptance, movePrompt, namesAMove, pickMove } from './cl
 import type { Ask } from './claude'
 import {
   EFFORTS, MODELS, TIME_CONTROLS, agreeDraw, cleanText, importGames, pgnUrl, applyMove, claimDraw, claimable, flagIfOut, freeze, fromPgn, illegalMove,
-  isClockRunning, isTimed, nameOf, newGame, other, remaining, replay, resign, sideOf, toPgn, turnOf, unfreeze,
+  isClockRunning, isTimed, nameOf, newGame, other, priceUsd, remaining, replay, resign, sideOf, toPgn, turnOf, unfreeze,
 } from './game'
 import type { NewGame } from './game'
 import { estimateUsd, nextPairing, roundRobin, standings } from './tournament'
@@ -24,6 +24,41 @@ const OPTION_LABEL_WIDTH = 20
 const MAX_IMPORT_ONCE = 30
 const MAX_IMPORT_CHARS = 2_000_000
 const TICK_MS = 500
+const HELP = `Chessus commands
+
+Play
+  /chess                      open the pane
+  /chess <model> [effort]     new game, you (White) vs Claude: /chess opus high
+                              models: fable, opus, sonnet, haiku · efforts: low, medium, high, xhigh, max (default medium)
+  /chess move <move>          play a move: e4, Nf3, O-O, exd5, e8=Q or e2e4
+  /chess pause                freeze both clocks and Claude
+  /chess resume               carry on a paused game
+  /chess save                 save the game to resume later from replays
+  /chess resign               resign, after a yes/no question
+  /chess close                close the pane; mid-game it pauses and saves first
+
+Drive the pane from the chat
+  /chess keys                 list every key, picker and field on screen now
+  /chess key <key>            press one: /chess key 2 opens new game
+  /chess set <name> <value>   change a picker or fill a field: /chess set tc 5+3
+
+Screens
+  /chess replays              famous games, online search, saved games (also /chess library)
+  /chess tournament           tournament setup, or standings while one runs
+  /chess settings             defaults for new games
+
+Games and files
+  /chess last                 replay your last finished game
+  /chess search <words>       find official events on Lichess: /chess search candidates
+  /chess player <username>    load a Chess.com player's latest month of games
+  /chess import <url|file>    load PGN from a Lichess link, any PGN URL, or a .pgn file
+  /chess export <path>        write every saved game to one PGN file
+
+/chess runs at once, even while Claude is replying.`
+
+// Every hotkey, picker and field the pane last drew, so /chess can drive the pane from the chat when clicks and keys never reach it.
+type Control = { kind: 'key' | 'set'; label: string; options?: readonly string[]; run: (value: string) => unknown }
+const controls = new Map<string, Control>()
 const MAX_API_ERRORS = 3
 const CASUAL_RETRIES = 3
 const UNREADABLE_RETRIES = 3
@@ -48,17 +83,16 @@ const sideFrom = (value: string, effort: Effort): Side => (value === 'human' ? {
 const PLAYER_OPTIONS = [{ value: 'human', label: 'You' }, ...MODELS]
 const costKey = (side: Side) => (side.kind === 'claude' ? `${side.model}|${side.effort}` : '')
 
-const HOW_TO_MOVE = 'Type a move + Enter: e4, Nf3, O-O'
-// Sidebar beside the board: players, clocks, moves, status, the move box. Lichess-style.
+// Sidebar beside the board: players, clocks, moves, status. Lichess-style.
 const SIDEBAR = 26
-// Width beside the 8 squares: rank labels 2, gap 2, sidebar. Rows besides the squares: nav, the gap under it, files row, promo row, two key rows (replay and game over).
+// Width beside the 8 squares: rank labels 2, gap 2, sidebar. Rows besides the squares: nav, the gap under it, files row, promo row, two key rows (replay and game over), Claude's spend.
 const BESIDE_BOARD = 4 + SIDEBAR
-const CHROME_ROWS = 7
+const CHROME_ROWS = 8
 // What the pane asks for when it opens: room for the 7x3 board and the sidebar. The person's own resize wins.
 const PANE_ROWS = 8 * 3 + CHROME_ROWS
 const PANE_COLUMNS = 8 * 7 + BESIDE_BOARD
 // Sidebar rows that are not moves, worst case: mode header, 2 player lines, 2 rules, gap, STATUS label, status,
-// then two rows that are the move box and a note during play, or the outcome and its follow-up line once it ends.
+// then two rows: a note during play, or the outcome and its follow-up line once it ends.
 const SIDEBAR_FIXED_ROWS = 10
 const SWITCH_ROWS = 2
 // The store holds 4 MiB in all; the library keeps well under it so settings, costs and the live game always fit.
@@ -78,19 +112,33 @@ export const formatClock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-// ponytail: cost is the session's /cost delta around the call; a turn running in parallel leaks into it
-const costNow = async ($: EngineInterface) => (await $.session.usage()).cost?.usd ?? 0
+// Why no Claude call may be made for this game now: it is paused or over, or its tournament is paused or at its cap.
+const heldBy = async ($: EngineInterface, gameId: number) => {
+  const g = await read($, gameA)
+  if (!g || g.id !== gameId || g.result !== '*') return 'The game is over.'
+  if (g.isPaused) return 'The game is paused.'
+  const t = await read($, tourA)
+  if (!isTournamentGame(g, t)) return ''
+  if (t.spentUsd >= t.budgetUsd) return `Budget of $${t.budgetUsd} reached.`
+  return t.status === 'running' ? '' : 'The tournament is paused.'
+}
 
+// Every Claude call goes through here, so nothing is spent while the game is held. The check sits right before the call.
 const complete = async ($: EngineInterface, g: Game, c: Color, prompt: string, timeoutMs: number) => {
   const side = sideOf(g, c)
   if (side.kind !== 'claude') throw new Error('not a Claude side')
-  const before = await costNow($)
+  // Claude Code prices at the managed modelPricing only; a project's settings cannot change what it bills.
+  const pricing = await $.settings.read({ source: 'policy' }).then(p => p.modelPricing, () => undefined)
+  const held = await heldBy($, g.id)
+  if (held) return { held }
   const r = await $.model.complete({ model: side.model, effort: side.effort, prompt, maxTokens: 16_000, timeoutMs })
-  return { r, usd: Math.max(0, (await costNow($)) - before) }
+  return { r, usd: priceUsd(side.model, r.usage, pricing) }
 }
 
 const askMove = async ($: EngineInterface, g: Game, c: Color, retry: string, timeoutMs: number) => {
-  const { r, usd } = await complete($, g, c, movePrompt(g, c, retry), timeoutMs)
+  const res = await complete($, g, c, movePrompt(g, c, retry), timeoutMs)
+  if (!res.r) return { held: res.held ?? '' }
+  const { r, usd } = res
   if (!r.isAnswered) return { ask: { kind: 'error', reason: r.reason } as Ask, usd }
   if (r.text.trim() === '') return { ask: { kind: 'error', reason: 'empty reply' } as Ask, usd }
   const san = pickMove(r.text, replay(g.history).moves())
@@ -100,12 +148,15 @@ const askMove = async ($: EngineInterface, g: Game, c: Color, retry: string, tim
 }
 
 const askDraw = async ($: EngineInterface, g: Game, c: Color) => {
-  const { r, usd } = await complete($, g, c, drawPrompt(g, c), 120_000)
-  return { isAccepted: r.isAnswered && isAcceptance(r.text), usd }
+  const res = await complete($, g, c, drawPrompt(g, c), 120_000)
+  if (!res.r) return { held: res.held ?? '' }
+  return { isAccepted: res.r.isAnswered && isAcceptance(res.r.text), usd: res.usd }
 }
 
 const loadGames = async ($: EngineInterface) => ((await $.store.get('games')) as SavedGame[] | undefined) ?? []
-const loadCosts = async ($: EngineInterface) => ((await $.store.get('costs')) as Record<string, CostStat> | undefined) ?? {}
+// 0.1.1's table ('costs') counted moves at $0 once Claude Code 2.1.292 froze the session cost, so 0.1.2 starts a new one.
+const COSTS_KEY = 'costs-v2'
+const loadCosts = async ($: EngineInterface) => ((await $.store.get(COSTS_KEY)) as Record<string, CostStat> | undefined) ?? {}
 
 const patchTour = ($: EngineInterface, fn: (t: Tournament) => Partial<Tournament>) => update($, tourA, t => t && { ...t, ...fn(t) })
 
@@ -145,7 +196,7 @@ const spend = async ($: EngineInterface, gameId: number, side: Side, usd: number
   // ponytail: get-then-set on the cost table; two overlapping calls can drop one sample of an average
   const costs = await loadCosts($)
   const was = costs[costKey(side)] ?? { usd: 0, moves: 0 }
-  await $.store.set('costs', { ...costs, [costKey(side)]: { usd: was.usd + usd, moves: was.moves + (isMove ? 1 : 0) } })
+  await $.store.set(COSTS_KEY, { ...costs, [costKey(side)]: { usd: was.usd + usd, moves: was.moves + (isMove ? 1 : 0) } })
 }
 
 // An unfinished casual game outlives the session; a tournament game ends with its tournament.
@@ -295,11 +346,6 @@ const claudeTurn = async ($: EngineInterface) => {
   const c = turnOf(g)
   const side = sideOf(g, c)
   if (side.kind !== 'claude') return
-  const t = await read($, tourA)
-  if (isTournamentGame(g, t) && t.status === 'running' && t.spentUsd >= t.budgetUsd) {
-    await pauseTournament($, `Budget of $${t.budgetUsd} reached. Raise it in Settings, then resume.`)
-    return
-  }
   const token = `${g.id}:${g.history.length}:${Math.random()}`
   await update($, gameA, s => (s && s.id === g.id && !s.thinking && s.history.length === g.history.length ? { ...s, thinking: token } : s))
 
@@ -319,19 +365,27 @@ const askUntilMoved = async (
   let errors = 0
   let casualMisses = 0
   let unreadable = 0
+  const release = () => update($, gameA, s => (isMine(s) ? { ...s, thinking: '' } : s))
   for (;;) {
     const before = await read($, gameA)
     if (!isMine(before)) return
     const now = await $.clock.now()
     const timeoutMs = isClockRunning(before, c) ? Math.max(1000, remaining(before, c, now) + 500) : 600_000
-    const { ask, usd } = await askMove($, before, c, retry, timeoutMs)
+    const asked = await askMove($, before, c, retry, timeoutMs)
+    if (!asked.ask) {
+      // A move at the cap pauses the tournament, freezing the game before the turn is let go so the ticker starts no other
+      // call. Only moves pause it: a draw offer pausing would throw away a paid move call already under way.
+      const t = await read($, tourA)
+      if (isTournamentGame(before, t) && t.status === 'running' && t.spentUsd >= t.budgetUsd) {
+        await pauseTournament($, `${asked.held} Raise it in Settings, then resume.`)
+      }
+      return release()
+    }
+    const { ask, usd } = asked
     await spend($, g.id, side, usd, ask.kind === 'move')
     const cur = await read($, gameA)
     if (!isMine(cur)) return
-    if (cur.isPaused) {
-      await update($, gameA, s => (isMine(s) ? { ...s, thinking: '' } : s))
-      return
-    }
+    if (cur.isPaused) return release()
     const at = await $.clock.now()
 
     if (ask.kind === 'move') {
@@ -499,10 +553,10 @@ export const whyNotMove = (text: string, history: readonly string[]) => {
   return meant.length > 1 ? `"${text.trim()}" is ambiguous: more than one piece can go there. Write ${[...meant].sort().join(" or ")}.` : `"${text.trim()}" is not a legal move here.`
 }
 
-const typedMove = async ($: EngineInterface, text: string, isFromChat = false) => {
+const typedMove = async ($: EngineInterface, text: string) => {
   const g = await read($, gameA)
   const uci = g && parseMove(text, g.history)
-  return uci ? humanMove($, uci, isFromChat) : false
+  return uci ? humanMove($, uci, true) : false
 }
 
 const offerDraw = async ($: EngineInterface) => {
@@ -511,8 +565,13 @@ const offerDraw = async ($: EngineInterface) => {
   if (!g || !me || g.result !== '*') return
   const opponent = sideOf(g, other(me))
   if (opponent.kind !== 'claude') return
+  const decline = (why: string) => update($, gameA, s => (s && s.id === g.id ? { ...s, note: `No draw offer sent. ${why}` } : s))
+  const held = await heldBy($, g.id)
+  if (held) return decline(held)
   await update($, gameA, s => (s && s.id === g.id ? { ...s, note: `Offered a draw to ${nameOf(opponent)}...` } : s))
-  const { isAccepted, usd } = await askDraw($, g, other(me))
+  const res = await askDraw($, g, other(me))
+  if (res.held !== undefined) return decline(res.held)
+  const { isAccepted, usd } = res
   await spend($, g.id, opponent, usd, false)
   const cur = await read($, gameA)
   if (!cur || cur.id !== g.id || cur.result !== '*') return
@@ -628,15 +687,32 @@ export const outcome = (result: string, termination: string, white: string, blac
 // A casual game in progress goes to replays with what it needs to carry on later. Clocks restart on resume.
 const saveToResume = async ($: EngineInterface) => {
   const g = await read($, gameA)
-  if (!isLiveCasual(g)) return 'Only a casual game in progress can be saved to resume.'
-  if (g.history.length === 0) return 'Nothing to save yet: no moves have been played.'
+  if (!isLiveCasual(g)) return { isSaved: false, text: 'Only a casual game in progress can be saved to resume.' }
+  if (g.history.length === 0) return { isSaved: false, text: 'Nothing to save yet: no moves have been played.' }
   const saved: SavedGame = {
     pgn: toPgn(g, new Date()), white: nameOf(g.white), black: nameOf(g.black), result: '*', termination: 'saved to resume',
     at: new Date().toISOString(), resume: { white: g.white, black: g.black, tcId: g.tc.id, rules: g.rules, isClaudeClocked: g.isClaudeClocked, gameId: g.id },
   }
-  await dropSaved($, s => s.result === '*' && s.resume?.gameId === g.id)
+  const isOld = (s: SavedGame) => s.result === '*' && s.resume?.gameId === g.id
+  const old = (await loadGames($)).filter(isOld)
+  await dropSaved($, isOld)
   const { isSaved } = await saveGames($, [saved])
-  return isSaved ? 'Saved under replays: open it there and press r to resume. c copies the PGN to share.' : 'The store is full. /chess export your games, then try again.'
+  if (!isSaved && old.length) await saveGames($, old)
+  return isSaved
+    ? { isSaved, text: 'Saved under replays: open it there and press r to resume. c copies the PGN to share.' }
+    : { isSaved, text: 'The store is full. /chess export your games, then try again.' }
+}
+
+// Keeps the live casual game resumable from replays, then clears it so whatever starts next does not archive it again.
+// Only clears once the snapshot is really in the store, so a full store never loses the game: false, and the caller stops.
+const keepLive = async ($: EngineInterface) => {
+  const live = await read($, gameA)
+  if (!isLiveCasual(live) || live.history.length === 0) return true
+  const { isSaved, text } = await saveToResume($)
+  $.ui.toast(text)
+  if (!isSaved) return false
+  await update($, gameA, x => (isLiveCasual(x) ? null : x))
+  return true
 }
 
 const deleteSaved = async ($: EngineInterface, review: Review) => {
@@ -680,17 +756,37 @@ const openReview = async ($: EngineInterface, saved: SavedGame) => {
   }
 }
 
+// A key that opens a yes/no question in the pane asks it in Claude Code's own picker too, once the pane has drawn it.
+const confirmFromChat = async ($: EngineInterface) => {
+  if (!(await read($, viewA)).confirm) return ''
+  for (const k of ['y', 'n', 'k', 'p']) controls.delete(k)
+  $.ui.invalidate('ui.render')
+  for (let i = 0; i < 20 && !controls.has('y'); i++) await $.clock.sleep(50)
+  const yes = controls.get('y')
+  const no = controls.get('n')
+  if (!yes || !no) return 'its question is waiting in the pane'
+  const third = controls.get('k') ?? controls.get('p')
+  const choices = [yes, third, no].filter((c): c is Control => !!c)
+  const question = third?.label.startsWith('pause') ? 'Leave the game?' : third ? 'What happens to the game in progress?' : `${yes.label}?`
+  const answer = await $.ui.ask(question, choices.map(c => c.label)).catch(() => no.label)
+  const picked = choices.find(c => c.label === answer) ?? no
+  await picked.run('')
+  return picked.label
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'chess',
       description: 'Chess against Claude, Claude vs Claude, tournaments',
-      argumentHint: '[model [effort]] | move <move> | save | replays | search <words> | player <chess.com user> | import <url|file> | pause | resume | resign | close | tournament | library | settings | last | export <path>',
+      immediate: true,
+      argumentHint: 'help | [model [effort]] | move <move> | pause | resume | save | resign | close | keys | key <key> | set <name> <value> | replays | tournament | settings | last | search <words> | player <user> | import <url|file> | export <path>',
     })
     const stored = (await $.store.get('settings')) as Partial<Prefs> | undefined
     if (stored) await update($, settingsA, s => ({ ...s, ...stored }))
     await update($, gameA, g => (g && g.thinking ? { ...g, thinking: '' } : g))
     await restoreLive($)
+    await $.store.delete('costs')
     $.clock.every(TICK_MS, () => void tick($))
     return next(e)
   })
@@ -703,6 +799,23 @@ export const register: Register = on => {
       await $.ui.open({ id: PANE, title: 'Chessus', focus: true, rows: PANE_ROWS, columns: PANE_COLUMNS })
       return { text }
     }
+    if (word === 'help') return { text: HELP }
+    if (['keys', 'key', 'set'].includes(word) && !(await $.ui.panes()).some(p => p.id === PANE && p.isShown)) controls.clear()
+    if (word === 'keys') {
+      if (!controls.size) return open('Chessus opened. Run /chess keys again to list what it shows.')
+      const rows = [...controls].map(([k, c]) => (c.kind === 'key' ? `key ${k}: ${c.label}` : `set ${k}: ${c.label}${c.options ? ` (${c.options.join(', ')})` : ' <text>'}`))
+      return { text: `On screen now:\n${rows.join('\n')}\n\n/chess key <key> presses one; /chess set <name> <value> picks or fills one.` }
+    }
+    if (word === 'key' || word === 'set') {
+      const value = args.replace(/^\S+(\s+\S+)?\s*/, '')
+      const c = second ? (controls.get(second) ?? [...controls].find(([k]) => k.toLowerCase() === second.toLowerCase())?.[1]) : undefined
+      if (!c || c.kind !== word) return { text: `Nothing "${second ?? ''}" to ${word === 'key' ? 'press' : 'set'} on screen. /chess keys lists what is.` }
+      if (word === 'set' && c.options && !c.options.includes(value)) return { text: `${second} takes: ${c.options.join(', ')}.` }
+      if (word === 'set' && !value) return { text: `Usage: /chess set ${second} <value>` }
+      await c.run(value)
+      const answer = await confirmFromChat($)
+      return { text: `${word === 'key' ? 'Pressed' : 'Set'} ${c.label.split(':')[0]}${word === 'set' ? ` to ${value}` : ''}${answer ? `, then ${answer}` : ''}. /chess keys lists what is on screen now.` }
+    }
     if (word === 'export') {
       const path = args.slice(first.length).trim()
       if (!path) return { text: 'Usage: /chess export <path>' }
@@ -714,9 +827,9 @@ export const register: Register = on => {
       const g = await read($, gameA)
       const isPausing = isLiveCasual(g) && !g.isPaused
       await closePane($, isPausing)
-      return { text: isPausing ? 'Game paused and saved, Chessus closed. /chess brings it back; press p to resume.' : 'Chessus closed. /chess opens it again.' }
+      return { text: isPausing ? 'Game paused and saved, Chessus closed. /chess resume continues it.' : 'Chessus closed. /chess opens it again.' }
     }
-    if (word === 'save') return { text: await saveToResume($) }
+    if (word === 'save') return { text: (await saveToResume($)).text }
     if (word === 'pause' || word === 'resume') {
       const g = await read($, gameA)
       if (!isLiveCasual(g)) return { text: 'No casual game in progress. Tournament games pause from the tournament screen.' }
@@ -727,7 +840,8 @@ export const register: Register = on => {
     if (word === 'resign') {
       const g = await read($, gameA)
       if (!g || g.result !== '*' || !humanColor(g)) return { text: 'No game of yours in progress.' }
-      if (second?.toLowerCase() !== 'yes') return { text: `Resign this game against ${nameOf(sideOf(g, other(humanColor(g)!)))}? Run /chess resign yes to confirm.` }
+      const answer = await $.ui.ask(`Resign this game against ${nameOf(sideOf(g, other(humanColor(g)!)))}?`, ['Yes, resign', 'No, keep playing']).catch(() => '')
+      if (answer !== 'Yes, resign') return { text: 'Kept playing.' }
       await resignGame($)
       const after = (await read($, gameA))!
       return { text: `You resigned. ${after.result} (${after.termination}). The game is in /chess library.` }
@@ -739,7 +853,7 @@ export const register: Register = on => {
       if (!g || g.result !== '*') return { text: 'No game in progress. Start one with /chess <model>, e.g. /chess haiku low.' }
       if (g.isPaused) return { text: 'The game is paused.' }
       if (sideOf(g, turnOf(g)).kind !== 'human') return { text: `Not your move: ${nameOf(sideOf(g, turnOf(g)))} is to move.` }
-      if (!(await typedMove($, text, true))) {
+      if (!(await typedMove($, text))) {
         return { text: `${whyNotMove(text, g.history)} Legal moves: ${replay(g.history).moves().join(' ')}` }
       }
       await setView($, { ply: null, review: null })
@@ -795,18 +909,25 @@ export const register: Register = on => {
       return open(`Chessus ${word} opened.`)
     }
     const model = word ? MODELS.find(m => m.value === word || m.label.toLowerCase().startsWith(word)) : undefined
-    if (word && !model) return { text: `Unknown model "${first}". Try: ${MODELS.map(m => m.label.split(' ')[0]!.toLowerCase()).join(', ')}.` }
+    if (word && !model) return { text: `Unknown command or model "${first}". Models: ${MODELS.map(m => m.label.split(' ')[0]!.toLowerCase()).join(', ')}. /chess help lists every command.` }
     if (model) {
       const effort = EFFORTS.find(x => x === second) ?? 'medium'
+      const live = await read($, gameA)
+      if (isLiveCasual(live) && live.history.length > 0) {
+        const answer = await $.ui.ask('Start a new game? What happens to the game in progress?', ['Abandon it', 'Keep it to resume', 'Cancel']).catch(() => 'Cancel')
+        if (answer === 'Keep it to resume') {
+          if (!(await keepLive($))) return { text: 'The store is full, so the game in progress stays. /chess export your games, then try again.' }
+        } else if (answer !== 'Abandon it') return { text: 'Kept the game in progress.' }
+      }
       const s: Prefs = { ...(await read($, settingsA)), ...(await read($, viewA)).opts }
       const isStarted = await startGame($, { white: { kind: 'human' }, black: { kind: 'claude', model: model.value, effort }, tc: tcOf(s.tcId), rules: s.rules, isClaudeClocked: s.isClaudeClocked, canSwitchOpponent: s.canSwitchOpponent })
       if (isStarted) await setView($, { opts: {} })
       if (!isStarted) return { text: 'A tournament game is in progress. End the tournament first.' }
-      return open(`New game: you (White) vs ${model.label} (${effort}). Type your move in the "Your move" box and press Enter, or use /chess move e4.`)
+      return open(`New game: you (White) vs ${model.label} (${effort}). Click a piece, then its square, or use /chess move e4.`)
     }
     const live = await read($, gameA)
     if (live && live.result === '*') {
-      return open(live.isPaused ? 'Chessus opened. Your game is paused: press p to resume.' : 'Chessus opened. Type your move in the box and press Enter, or /chess move e4.')
+      return open(live.isPaused ? 'Chessus opened. Your game is paused: /chess resume continues it.' : 'Chessus opened. Click a piece, then its square, or /chess move e4.')
     }
     return open('Chessus opened. Start a game from "new" (key 1), or /chess haiku low.')
   })
@@ -821,8 +942,20 @@ export const register: Register = on => {
     const view = await read($, viewA)
     const settings = await read($, settingsA)
     const ui = $.ui.resolve(e)
-    const { Box, Text, Button } = ui
+    const { Box, Text } = ui
     const hasBoard = e.surface === 'terminal' || e.surface === 'desktop'
+    if (hasBoard) controls.clear()
+    const arg = (key: string) => ({ plugin: 'chessus', element: key, component: 'Pane', requestId: PANE, surface: e.surface }) as const
+    const Button: typeof ui.Button = props => {
+      const key = props.key ?? props.hotkey ?? ''
+      if (hasBoard && props.hotkey) controls.set(props.hotkey, { kind: 'key', label: (props.label ?? key).trim(), run: () => props.onPress(arg(key)) })
+      return ui.Button(props)
+    }
+    type Fields = Extract<typeof ui, { Input: unknown }>
+    const Input: Fields['Input'] = props => {
+      if (hasBoard) controls.set(props.key, { kind: 'set', label: props.label ?? props.placeholder ?? props.key, run: v => props.onSubmit(v, arg(props.key) as never) })
+      return (ui as Fields).Input(props)
+    }
     const hasFields = e.surface !== 'mobile'
 
     const t = await read($, tourA)
@@ -842,8 +975,8 @@ export const register: Register = on => {
     // The last game of a finished tournament still shows that tournament's total against its cap.
     const hasClaude = !!g && (g.white.kind === 'claude' || g.black.kind === 'claude')
     const spend = view.screen !== 'game' || view.review || !g || !hasClaude ? null
-      : tourGame ? `Claude $${tourGame.spentUsd.toFixed(2)} / $${tourGame.budgetUsd} cap`
-        : `Claude $${g.spentUsd.toFixed(3)} · no cap`
+      : tourGame ? `Claude est. $${tourGame.spentUsd.toFixed(2)} / $${tourGame.budgetUsd} cap`
+        : `Claude est. $${g.spentUsd.toFixed(3)} · no cap`
     const nav = (
       <Box width="100%">
         {tabs.map((tab, i) => (
@@ -860,8 +993,6 @@ export const register: Register = on => {
           if (isLiveCasual(live) && !live.isPaused) await setView($, { screen: 'game', review: null, ply: null, confirm: 'close' })
           else await closePane($, false)
         }} />
-        <Box flexGrow={1} />
-        {spend && <Text dimColor wrap="truncate-end">{spend}</Text>}
       </Box>
     )
     const page = (...children: RenderChildren[]) => (
@@ -879,6 +1010,7 @@ export const register: Register = on => {
       const at = Math.max(0, options.findIndex(o => o.value === value))
       const shown = options[at]?.label ?? options[at]?.value ?? value
       const go = (by: number) => void onSelect(options[(at + by + options.length) % options.length]!.value)
+      if (hasBoard) controls.set(key, { kind: 'set', label: `${label}: ${shown}`, options: options.map(o => o.value), run: onSelect })
       const width = layout.labelWidth ?? 0
       const row = (
         <Box key={key}>
@@ -932,7 +1064,7 @@ export const register: Register = on => {
             </Box>
             {hasFields && 'Input' in ui && (
               <Box marginLeft={SETTINGS_LABEL_WIDTH}>
-                <ui.Input
+                <Input
                   key="budget"
                   placeholder="new cap in dollars, e.g. 5"
                   submitLabel="set"
@@ -969,7 +1101,7 @@ export const register: Register = on => {
         ),
         section('Find games online',
           hasFields && 'Input' in ui && (
-            <ui.Input key="search-events" label="Official events (Lichess)" placeholder="e.g. candidates, olympiad, world championship" submitLabel="search"
+            <Input key="search-events" label="Official events (Lichess)" placeholder="e.g. candidates, olympiad, world championship" submitLabel="search"
               onSubmit={v => v.trim() && searchEvents($, v.trim())} />
           ),
           ...(view.found ?? []).map((f, i) => (
@@ -977,7 +1109,7 @@ export const register: Register = on => {
           )),
           <Box key="player-gap" marginTop={1}>
             {hasFields && 'Input' in ui && (
-              <ui.Input key="search-player" label="A player's games (Chess.com)" placeholder="chess.com username" submitLabel="load"
+              <Input key="search-player" label="A player's games (Chess.com)" placeholder="chess.com username" submitLabel="load"
                 onSubmit={v => v.trim() && playerGames($, v.trim())} />
             )}
           </Box>,
@@ -1017,7 +1149,7 @@ export const register: Register = on => {
       const current = t.current !== null ? t.pairings[t.current] : undefined
       return page(
         <Text bold color="yellow">{`TOURNAMENT #${t.id} · ${done}/${t.pairings.length} games played · ${t.status === 'paused' ? 'PAUSED' : 'RUNNING'}`}</Text>,
-        <Text dimColor>{`Claude spend $${t.spentUsd.toFixed(2)} of $${t.budgetUsd} cap`}</Text>,
+        <Text dimColor>{`Claude spend est. $${t.spentUsd.toFixed(2)} of $${t.budgetUsd} cap`}</Text>,
         <Text dimColor>{'#  Player                  P   W  D  L  Pts   SB'}</Text>,
         ...table.map((r, i) => (
           <Text key={`row-${r.entrant}`}>{`${String(i + 1).padEnd(3)}${nameOf(t.entrants[r.entrant]!).padEnd(24)}${String(r.played).padEnd(4)}${String(r.wins).padEnd(3)}${String(r.draws).padEnd(3)}${String(r.losses).padEnd(3)}${String(r.points).padEnd(6)}${r.sb.toFixed(2)}`}</Text>
@@ -1116,12 +1248,16 @@ export const register: Register = on => {
           busy,
           view.confirm === 'replace' ? (
             <Box>
-              <Text color="yellow">{'Start anyway? The current game goes to replays as unfinished.  '}</Text>
-              <Button key="replace-yes" plain hotkey="y" label="yes, start  " onPress={async () => {
+              <Text color="yellow">{'Start the tournament? The current game:  '}</Text>
+              <Button key="replace-yes" plain hotkey="y" label="abandon it  " onPress={async () => {
                 await setView($, { confirm: null })
                 await startTournament()
               }} />
-              <Button key="replace-no" plain hotkey="n" label="no" onPress={() => setView($, { confirm: null })} />
+              <Button key="replace-keep" plain hotkey="k" label="keep it to resume  " onPress={async () => {
+                await setView($, { confirm: null })
+                if (await keepLive($)) await startTournament()
+              }} />
+              <Button key="replace-no" plain hotkey="n" label="cancel" onPress={() => setView($, { confirm: null })} />
             </Box>
           ) : (
             <Button key="start-tournament" plain hotkey="s" label={view.entrants.length < 2 ? 'start tournament (add 2+ players first)' : 'start tournament'} onPress={async () => {
@@ -1158,12 +1294,16 @@ export const register: Register = on => {
         inTournament ? <Text color="yellow">A tournament is running. End it (standings) to start a casual game.</Text>
           : view.confirm === 'replace' ? (
             <Box>
-              <Text color="yellow">{'Start a new game? The current one goes to replays as unfinished.  '}</Text>
-              <Button key="replace-yes" plain hotkey="y" label="yes, start  " onPress={async () => {
+              <Text color="yellow">{'Start a new game? The current one:  '}</Text>
+              <Button key="replace-yes" plain hotkey="y" label="abandon it  " onPress={async () => {
                 await setView($, { confirm: null })
                 await begin()
               }} />
-              <Button key="replace-no" plain hotkey="n" label="no" onPress={() => setView($, { confirm: null })} />
+              <Button key="replace-keep" plain hotkey="k" label="keep it to resume  " onPress={async () => {
+                await setView($, { confirm: null })
+                if (await keepLive($)) await begin()
+              }} />
+              <Button key="replace-no" plain hotkey="n" label="cancel" onPress={() => setView($, { confirm: null })} />
             </Box>
           ) : (
             <Box>
@@ -1207,7 +1347,7 @@ export const register: Register = on => {
     const label = (c: Color) => (review ? (c === 'w' ? review.white : review.black) : nameOf(sideOf(live, c)))
     const head = (c: Color) => {
       const clock = review || !isTimed(live.tc) ? '' : formatClock(remaining(live, c, now))
-      const marker = isLive && result === '*' && toMove === c ? '»' : ' '
+      const marker = isLive && result === '*' && toMove === c ? '» ' : '  '
       const name = `${marker}${c === 'w' ? '○' : '●'} ${label(c)}`.slice(0, SIDEBAR - clock.length - 1)
       return <Text bold={isLive && result === '*' && toMove === c}>{name.padEnd(SIDEBAR - clock.length) + clock}</Text>
     }
@@ -1282,18 +1422,6 @@ export const register: Register = on => {
           <Text color={isOver ? 'yellow' : canMove ? 'green' : undefined} bold={isOver || canMove} inverse={isOver}>{isOver ? ` ${status} ` : status}</Text>
           {afterGame.map((line, i) => <Text key={`after-${i}`} color={i === 0 ? 'yellow' : undefined} bold={i === 0} dimColor={i > 0}>{line}</Text>)}
         </Box>
-        {canMove && hasFields && 'Input' in ui && (
-          <ui.Input
-            key="move"
-            placeholder={HOW_TO_MOVE}
-            submitLabel="play"
-            autoFocus
-            onSubmit={async v => {
-              if (await typedMove($, v)) return
-              await update($, gameA, x => (x ? { ...x, note: `${whyNotMove(v, x.history)} Legal: ${replay(x.history).moves().join(' ')}` } : x))
-            }}
-          />
-        )}
         {!review && live.note !== '' && <Text color="red">{live.note}</Text>}
         <Box flexGrow={1} />
         {canSwitch && opponent?.kind === 'claude' && select('opponent-model', 'Opponent', opponent.model, MODELS, v => switchOpponent({ model: v }))}
@@ -1303,7 +1431,7 @@ export const register: Register = on => {
     )
 
     const key = (k: string, hotkey: string, text: string, onPress: () => unknown) => (
-      <Button key={k} plain hotkey={hotkey} label={`${text}  `} onPress={() => void onPress()} />
+      <Button key={k} plain hotkey={hotkey} label={`${text}  `} onPress={() => onPress()} />
     )
     const keys =
       view.confirm === 'resign' ? (
@@ -1323,9 +1451,12 @@ export const register: Register = on => {
         </Box>
       ) : view.confirm === 'resume' && review ? (
         <Box>
-          <Text color="yellow">{'Resume the saved game? The game in progress goes to replays as unfinished.  '}</Text>
-          {key('resume-yes', 'y', 'yes, resume', () => resumeReview($, review))}
-          {key('resume-no', 'n', 'no', () => setView($, { confirm: null }))}
+          <Text color="yellow">{'Resume the saved game? The game in progress:  '}</Text>
+          {key('resume-yes', 'y', 'abandon it', () => resumeReview($, review))}
+          {key('resume-keep', 'k', 'keep it to resume', async () => {
+            if (await keepLive($)) await resumeReview($, review)
+          })}
+          {key('resume-no', 'n', 'cancel', () => setView($, { confirm: null }))}
         </Box>
       ) : view.confirm === 'close' ? (
         <Box>
@@ -1384,9 +1515,9 @@ export const register: Register = on => {
               kick($, 0)
             })}
             {isCasual && key('pause', 'p', live.isPaused ? 'resume' : 'pause', () => (live.isPaused ? resumeGame($) : pauseGame($)))}
-            {isCasual && key('save', 's', 'save to resume', async () => $.ui.toast(await saveToResume($)))}
+            {isCasual && key('save', 's', 'save to resume', async () => $.ui.toast((await saveToResume($)).text))}
             <Button key="copy" plain hotkey="c" label="copy PGN  " onPress={p => void $.ui.copy({ text: pgn, surface: p.surface })} />
-            {me && opponent?.kind === 'claude' && key('draw', 'd', 'offer draw', () => offerDraw($))}
+            {me && !live.isPaused && opponent?.kind === 'claude' && key('draw', 'd', 'offer draw', () => offerDraw($))}
             {me && turnOf(live) === me && claimable(live) && key('claim', 'm', 'claim draw', async () => {
               const cur = await read($, gameA)
               if (cur) await finish($, claimDraw(cur))
@@ -1417,6 +1548,7 @@ export const register: Register = on => {
         {sidebar}
       </Box>,
       keys,
+      spend && <Text dimColor wrap="truncate-end">{spend}</Text>,
     )
   })
 }

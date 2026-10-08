@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { Game } from '../types'
 import { namesAMove, pickMove } from '../hooks/claude'
-import { TIME_CONTROLS, applyMove, canMate, claimable, flagIfOut, illegalMove, newGame, remaining, toPgn } from '../hooks/game'
+import { TIME_CONTROLS, applyMove, canMate, claimable, flagIfOut, illegalMove, newGame, priceUsd, remaining, toPgn } from '../hooks/game'
 import { Chess } from '../hooks/vendor/chess.js'
 
 const tc = (id: string) => TIME_CONTROLS.find(t => t.id === id)!
@@ -100,4 +100,17 @@ test('a reply names a move only when its answer is shaped like one; markdown aro
     expect(namesAMove(reply)).toBe(false)
   expect(pickMove('**Nf3**', ['e4', 'Nf3'])).toBe('Nf3')
   expect(pickMove('`e4`', ['e4', 'Nf3'])).toBe('e4')
+})
+
+test("Claude's spend is list price, or the modelPricing setting's contracted rates and multiplier", () => {
+  const u = { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 1_000_000 }
+  const near = (a: number, b: number) => expect(Math.abs(a - b)).toBeLessThan(1e-9)
+  near(priceUsd('claude-haiku-4-5-20251001', u), 1 + 5 + 0.1 + 1.25)
+  near(priceUsd('claude-opus-5-5', u), 4 + 20 + 0.2 + 5)
+  const row = { input: 0.5, output: 2, cacheRead: 0.05, cacheWrite: 0.6 }
+  near(priceUsd('claude-haiku-4-5-20251001', u, { overrides: { 'Claude-Haiku-4-5': row } }), 3.15)
+  near(priceUsd('claude-haiku-4-5-20251001', u, { multiplier: 0.5, overrides: { 'claude-haiku-4-5': row } }), 1.575)
+  near(priceUsd('claude-opus-5-5', u, { multiplier: 0.5 }), 14.6)
+  near(priceUsd('claude-opus-5-5', u, { multiplier: 2, overrides: { 'claude-opus-5-5': { input: 1 } } }), 29.2)
+  near(priceUsd('claude-opus-5-5', u, { overrides: { 'claude-opus-5': row } }), 29.2)
 })

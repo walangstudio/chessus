@@ -57,7 +57,7 @@ test('an unfinished casual game comes back paused in the next session, with no c
   const HAIKU_LOW = { kind: 'claude', model: 'claude-haiku-4-5-20251001', effort: 'low' } as const
   const fresh = newGame({ id: 7, white: { kind: 'human' }, black: HAIKU_LOW, tc: TIME_CONTROLS.find(t => t.id === '5+3')!, rules: 'standard', isClaudeClocked: true }, 0)
   const live = applyMove(applyMove(fresh, 'e4', 10_000)!, 'e5', 20_000)!
-  engine(on, scripted([]), 0.01, { live })
+  engine(on, scripted([]), { live })
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   expect(await ui.find({ type: 'Text', text: /^e5 / })).toBeDefined()
@@ -87,4 +87,13 @@ test('two pieces that can reach one square must be told apart, as SAN requires',
   expect(parseMove('Nfd2', twoKnights)).toBe('f3d2')
   expect(parseMove('b1d2', twoKnights)).toBe('b1d2')
   expect(whyNotMove('Ke2', [])).toBe('"Ke2" is not a legal move here.')
+})
+
+test('/chess help names every subcommand, and an unknown word points to it', async ($, on) => {
+  engine(on, scripted([]))
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const help = (await $.command.run({ ...RUN, args: 'help' })).text
+  const words = ['move', 'pause', 'resume', 'save', 'resign', 'close', 'keys', 'key', 'set', 'replays', 'library', 'tournament', 'settings', 'last', 'search', 'player', 'import', 'export']
+  for (const w of words) expect(help).toContain(`/chess ${w}`)
+  expect((await $.command.run({ ...RUN, args: 'hlep' })).text).toMatch(/\/chess help lists every command/)
 })

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { HAIKU, PANE, asked, choose, engine, gate, scripted, toasts, tournamentSetup } from './kit'
+import { HAIKU, PANE, answer, asked, choose, engine, fillStore, gate, managed, panes, scripted, toasts, tournamentSetup } from './kit'
 
 const START = { cwd: '.', surface: 'terminal', isInteractive: true } as const
 const RUN = { command: 'chess', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -56,7 +56,7 @@ test('with the setting on, the opponent model and effort switch mid-game', async
   await ui.press({ key: 'start' })
   await choose(ui, 'opponent-model', 'Haiku 4.5')
   await choose(ui, 'opponent-effort', 'max')
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   await clock.advance(500)
   g.release('e5')
   await clock.advance(500)
@@ -82,14 +82,63 @@ test('the header names the mode: casual game or tournament round', async ($, on)
   expect(await ui.find({ type: 'Text', text: /^TOURNAMENT #1 · ROUND 1$/ })).toBeDefined()
 })
 
-test('/chess resign needs a second step', async ($, on) => {
+test('/chess resign asks yes or no first', async ($, on) => {
   engine(on, scripted([]))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  let pick = 'No'
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
+    const q = e.questions[0]!
+    return { result: { questions: e.questions, answers: { [q.question]: q.options!.find(o => o.label.startsWith(pick))!.label } } }
+  })
   await $.session.start(START)
   await $.command.run({ ...RUN, args: 'haiku low' })
-  expect((await $.command.run({ ...RUN, args: 'resign' })).text).toMatch(/Run \/chess resign yes to confirm/)
+  expect((await $.command.run({ ...RUN, args: 'resign' })).text).toMatch(/Kept playing/)
   expect((await $.command.run({ ...RUN, args: 'move e4' })).text).toMatch(/You played e4/)
-  expect((await $.command.run({ ...RUN, args: 'resign yes' })).text).toMatch(/You resigned\. 0-1/)
+  pick = 'Yes'
+  expect((await $.command.run({ ...RUN, args: 'resign' })).text).toMatch(/You resigned\. 0-1/)
+})
+
+test('the chat drives the pane: keys lists it, key presses, set picks, and a confirm asks yes or no', async ($, on) => {
+  const clock = engine(on, scripted([]))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  answer(on, 'yes')
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  expect((await $.command.run({ ...RUN, args: 'keys' })).text).toMatch(/key 4: settings/)
+  await $.command.run({ ...RUN, args: 'key 4' })
+  await ui.find({ type: 'Text', text: 'Default settings' })
+  expect((await $.command.run({ ...RUN, args: 'set format triple' })).text).toMatch(/format takes: single, double/)
+  await $.command.run({ ...RUN, args: 'set format double' })
+  expect(await ui.find({ type: 'Button', text: ' Double round-robin ' })).toBeDefined()
+  expect((await $.command.run({ ...RUN, args: 'key z' })).text).toMatch(/Nothing "z" to press/)
+  await $.command.run({ ...RUN, args: 'haiku low' })
+  await ui.find({ type: 'Text', text: /^Your move/ })
+  const resigning = $.command.run({ ...RUN, args: 'key x' })
+  await ui.find({ type: 'Text', text: /resign/i })
+  await clock.advance(50)
+  expect((await resigning).text).toMatch(/Pressed resign, then yes/)
+  expect(await ui.find({ type: 'Text', text: /GAME OVER|0-1/ })).toBeDefined()
+})
+
+test('from the chat: set takes extra spaces, the close question offers pause, and a closed pane has no keys', async ($, on) => {
+  const clock = engine(on, scripted([]))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  answer(on, 'pause')
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await $.command.run({ ...RUN, args: 'key 4' })
+  await ui.find({ type: 'Text', text: 'Default settings' })
+  await $.command.run({ ...RUN, args: 'set  format   double' })
+  expect(await ui.find({ type: 'Button', text: ' Double round-robin ' })).toBeDefined()
+  await $.command.run({ ...RUN, args: 'haiku low' })
+  await ui.find({ type: 'Text', text: /^Your move/ })
+  const closing = $.command.run({ ...RUN, args: 'key 0' })
+  await ui.find({ type: 'Text', text: /Leave the game/ })
+  await clock.advance(50)
+  expect((await closing).text).toMatch(/then pause & close/)
+  panes.isOpen = false
+  expect((await $.command.run({ ...RUN, args: 'key x' })).text).toMatch(/Nothing "x" to press/)
 })
 
 test('close from another screen shows its question on the board, and a new game drops any pending question', async ($, on) => {
@@ -115,7 +164,7 @@ test('a paused casual game is archived, not lost, when a tournament starts', asy
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   await clock.advance(100)
   await ui.press({ key: 'pause' })
   await tournamentSetup(ui)
@@ -123,7 +172,7 @@ test('a paused casual game is archived, not lost, when a tournament starts', asy
   await ui.press({ key: 'add' })
   await ui.press({ key: 'add' })
   await ui.press({ key: 'start-tournament' })
-  expect(await ui.find({ type: 'Text', text: /Start anyway\? The current game goes to replays as unfinished/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Start the tournament\? The current game:/ })).toBeDefined()
   await ui.press({ key: 'replace-yes' })
   await clock.advance(100)
   await ui.press({ key: 'nav-library' })
@@ -139,7 +188,7 @@ test('switching the opponent mid-thought drops the old reply and asks the new mo
   await choose(ui, 'switch', 'Switchable from the board')
   await ui.press({ key: 'nav-setup' })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   await clock.advance(100)
   await choose(ui, 'opponent-model', 'Haiku 4.5')
   await clock.advance(600)
@@ -169,11 +218,11 @@ test('a reply with no move in it is asked again for free; a named illegal move i
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   expect(await ui.find({ type: 'Text', text: /^e5 / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /illegal/ })).toBeUndefined()
-  await ui.input({ key: 'move', text: 'Nf3' })
+  await $.command.run({ ...RUN, args: 'move Nf3' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   expect(await ui.find({ type: 'Text', text: /played an illegal move \("Ke6"\)/ })).toBeDefined()
 })
@@ -183,7 +232,7 @@ test('save to resume puts the game under replays, and r there carries it on', as
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   await ui.press({ key: 'save' })
   await ui.press({ key: 'save' })
@@ -200,6 +249,23 @@ test('save to resume puts the game under replays, and r there carries it on', as
   expect(await ui.find({ type: 'Button', text: /saved to resume/ })).toBeUndefined()
 })
 
+test('keep it to resume on a full store keeps the game in progress, even with an older snapshot saved', async ($, on) => {
+  const clock = engine(on, scripted(['e5', 'Nc6']))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  answer(on, 'Keep')
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  await ui.press({ key: 'save' })
+  await $.command.run({ ...RUN, args: 'move Nf3' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  fillStore('games')
+  expect((await $.command.run({ ...RUN, args: 'haiku low' })).text).toMatch(/store is full, so the game in progress stays/)
+  expect(await ui.find({ type: 'Text', text: /^Nf3 / })).toBeDefined()
+})
+
 test('saving twice keeps one snapshot, an empty game is not saved, and resuming over a live game asks', async ($, on) => {
   const clock = engine(on, scripted(['e5', 'c5']))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -208,7 +274,7 @@ test('saving twice keeps one snapshot, an empty game is not saved, and resuming 
   await ui.press({ key: 'start' })
   await ui.press({ key: 'save' })
   expect(toasts.at(-1)).toMatch(/Nothing to save yet/)
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   await ui.press({ key: 'save' })
   await ui.press({ key: 'save' })
@@ -217,7 +283,7 @@ test('saving twice keeps one snapshot, an empty game is not saved, and resuming 
   await ui.press({ key: 'nav-setup' })
   await ui.press({ key: 'start' })
   await ui.press({ key: 'replace-yes' })
-  await ui.input({ key: 'move', text: 'd4' })
+  await $.command.run({ ...RUN, args: 'move d4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   await ui.press({ key: 'nav-library' })
   const saved = (await ui.findAll({ type: 'Button', text: /saved to resume/ }))[0]!
@@ -238,11 +304,11 @@ test('stepping to the end of a finished game shows it as ended, and a replay cop
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
-  await ui.input({ key: 'move', text: 'd4' })
+  await $.command.run({ ...RUN, args: 'move d4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
-  await ui.input({ key: 'move', text: 'Qh5#' })
+  await $.command.run({ ...RUN, args: 'move Qh5#' })
   expect(await ui.find({ type: 'Text', text: /GAME OVER/ })).toBeDefined()
   await ui.press({ key: 'prev' })
   await ui.press({ key: 'next' })
@@ -253,13 +319,35 @@ test('stepping to the end of a finished game shows it as ended, and a replay cop
   expect(copied.at(-1)).toContain('[White "Rodolfo Tan Cardoso"]')
 })
 
-test('Claude spend sits in the top row: casual games say no cap, tournament games show the cap', async ($, on) => {
+test("Claude's spend is priced from each reply's tokens, not the session total", async ($, on) => {
+  const clock = engine(on, scripted(['e5']))
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.020 · no cap$/ })).toBeDefined()
+})
+
+test("Claude's spend follows the managed modelPricing: contracted rates, then the multiplier", async ($, on) => {
+  const clock = engine(on, scripted(['e5']))
+  managed.modelPricing = { multiplier: 0.5, overrides: { 'claude-sonnet-5-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } }
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  for (let i = 0; i < 4; i++) await clock.advance(500)
+  // 10,000 input tokens at the contracted $3/MTok, halved.
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.015 · no cap$/ })).toBeDefined()
+})
+
+test('Claude spend sits under the game keys: casual games say no cap, tournament games show the cap', async ($, on) => {
   const g = gate()
   const clock = engine(on, g.wait)
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  expect(await ui.find({ type: 'Text', text: /^Claude \$0\.000 · no cap$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.000 · no cap$/ })).toBeDefined()
   await ui.press({ key: 'resign' })
   await ui.press({ key: 'resign-yes' })
   await tournamentSetup(ui)
@@ -268,7 +356,7 @@ test('Claude spend sits in the top row: casual games say no cap, tournament game
   await ui.press({ key: 'add' })
   await ui.press({ key: 'start-tournament' })
   await clock.advance(100)
-  expect(await ui.find({ type: 'Text', text: /^Claude \$0\.00 \/ \$5 cap$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.00 \/ \$5 cap$/ })).toBeDefined()
   await ui.press({ key: 'nav-settings' })
-  expect(await ui.find({ type: 'Text', text: /^Claude \$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$/ })).toBeUndefined()
 })

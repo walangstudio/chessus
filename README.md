@@ -1,6 +1,6 @@
 # chessus!
 
-![tests](https://img.shields.io/badge/tests-70%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.1-blue)
+![tests](https://img.shields.io/badge/tests-80%20passing-brightgreen) ![version](https://img.shields.io/badge/version-0.1.2-blue)
 
 chessus! is chess inside Claude Code. Play Claude, watch two Claude models play each other, run a tournament between them, or replay famous games. Every side is either you or a Claude model at the effort you pick.
 
@@ -16,6 +16,10 @@ It's a mod: a plugin built on Claude Code's function hooks. The board lives in a
   ```
 
 - The board draws in the terminal and in Claude Desktop's Code tab. Mobile and VS Code get the move list only.
+
+## Cost
+
+> **Experimental. Use at your own risk.** Every Claude move is a model call billed to your account. The spend chessus! shows is an estimate at Anthropic's API list prices (or your managed `modelPricing` rates). It is not your bill and can differ from it. On a Pro or Max subscription, calls may count against your usage limits or extra usage. The tournament cap pauses on the estimate, not on real charges. Check actual cost and usage in your Anthropic Console or claude.ai account. walangstudio is not responsible for charges or usage incurred.
 
 ## Install
 
@@ -34,9 +38,9 @@ Working from a checkout instead: `claude --plugin-dir path/to/chessus`, or put t
 /chess haiku low
 ```
 
-That opens a game against Haiku at low effort, you as White. Type a move into the box under the board and press Enter: `e4`, `Nf3`, `O-O`, or from-to like `e2e4`. Claude answers on the board, and as a toast if the pane is hidden.
+That opens a game against Haiku at low effort, you as White. Click a piece, then a dotted square. Claude answers on the board, and as a toast if the pane is hidden.
 
-You can also play from the chat: `/chess move e4`.
+You can also type moves from the chat: `/chess move e4`.
 
 ## Moving pieces
 
@@ -48,14 +52,14 @@ Moves use standard chess notation (SAN):
 - If two of the same piece can reach a square, say which one: `Nbd2`, `R1e2`. chessus! tells you when that's needed and lists the options.
 - From-to also works: `e2e4`, `e2-e4`, `e7e8q`.
 
-If your terminal passes mouse clicks to Claude Code, you can also click a piece, then a dotted square.
+With the board focused (click it), the arrow keys move a cursor and Enter or Space picks.
 
 ## The pane
 
 The top row has four places, plus standings while a tournament runs:
 
-- **board**: the game. The board is on the left. The sidebar shows the mode (CASUAL GAME, TOURNAMENT, or REPLAY), both players and their clocks, `»` next to whoever is to move, and the moves so far. The move list keeps its full height from the first move, so nothing below it shifts as the game goes on. Under it sits STATUS: whose turn it is, the move box, and when a game ends, a GAME OVER banner with who won and how. Claude's spend shows at the top right, with the budget cap in a tournament.
-- **new game**: switch between Casual game and Tournament, set up the sides or players, and adjust this game's options (time control, rules, Claude's clock, switching the opponent mid-game, tournament format). They start at your default settings. Starting over a game in progress asks first, and keeps the old game under replays.
+- **board**: the game. The board is on the left. The sidebar shows the mode (CASUAL GAME, TOURNAMENT, or REPLAY), both players and their clocks, `»` next to whoever is to move, and the moves so far. The move list keeps its full height from the first move, so nothing below it shifts as the game goes on. Under it sits STATUS: whose turn it is, and when a game ends, a GAME OVER banner with who won and how. Claude's spend shows under the game keys, with the budget cap in a tournament.
+- **new game**: switch between Casual game and Tournament, set up the sides or players, and adjust this game's options (time control, rules, Claude's clock, switching the opponent mid-game, tournament format). They start at your default settings. Starting over a game in progress asks what happens to it: abandon it (it stays under replays to watch, not to continue), keep it to resume later from replays, or cancel.
 - **replays**: famous games, online search, and everything you've played or imported. Open a saved game and press `x` to delete it, or delete them all from the bottom of the list. Both ask first.
 - **settings**: your defaults for new games: time control, rules, Claude's clock, pace for Claude vs Claude, tournament format and budget cap.
 
@@ -93,23 +97,47 @@ Anywhere: `1` board, `2` new game, `3` replays, `4` settings, `5` standings whil
 
 ## Commands
 
+`/chess help` prints this list in the chat. `/chess` runs at once, even while Claude is mid-reply, so a game never waits on the chat.
+
+### Play
+
 | Command | Does |
 | --- | --- |
 | `/chess` | Open the pane |
-| `/chess opus high` | New game: you vs Opus 5.5 at high effort. Models: fable, opus, sonnet, haiku. Efforts: low, medium, high, xhigh, max |
-| `/chess move e4` | Play a move from the chat |
-| `/chess pause`, `/chess resume` | Freeze both clocks and Claude, or carry on |
+| `/chess <model> [effort]` | New game, you (White) vs Claude: `/chess opus high`. Models: fable, opus, sonnet, haiku. Efforts: low, medium, high, xhigh, max; medium when left out |
+| `/chess move <move>` | Play a move: `e4`, `Nf3`, `O-O`, `exd5`, `e8=Q` or `e2e4` |
+| `/chess pause` | Freeze both clocks and Claude |
+| `/chess resume` | Carry on a paused game |
 | `/chess save` | Save the game in progress to resume later; open it under replays and press `r` |
-| `/chess resign` | Asks first; `/chess resign yes` resigns |
+| `/chess resign` | Resign, after a yes/no question in Claude Code's own picker |
 | `/chess close` | Close the pane. Mid-game it pauses and saves first |
+
+### Drive the pane from the chat
+
+| Command | Does |
+| --- | --- |
+| `/chess keys` | List every key, picker and field the pane shows right now |
+| `/chess key <key>` | Press one of the pane's keys: `/chess key 2` opens new game. A key that asks first asks in Claude Code's yes/no picker |
+| `/chess set <name> <value>` | Change a picker or fill a field: `/chess set tc 5+3` |
+
+### Screens
+
+| Command | Does |
+| --- | --- |
+| `/chess replays` | Famous games, online search, saved games. `/chess library` does the same |
 | `/chess tournament` | Tournament setup, or standings if one is running |
-| `/chess replays` | Famous games, online search, saved games |
-| `/chess search candidates` | Find official over-the-board events on Lichess and download their games |
-| `/chess player <chess.com username>` | Load a Chess.com player's latest month of games |
-| `/chess import <url or file>` | Load PGN from a Lichess game or study link, any PGN URL, or a local `.pgn` file |
+| `/chess settings` | Your defaults for new games |
+
+### Games and files
+
+| Command | Does |
+| --- | --- |
 | `/chess last` | Replay your last finished game |
-| `/chess export games.pgn` | Write every saved game to one PGN file |
-| `/chess settings` | Settings |
+| `/chess search <words>` | Find official over-the-board events on Lichess and download their games: `/chess search candidates` |
+| `/chess player <username>` | Load a Chess.com player's latest month of games |
+| `/chess import <url or file>` | Load PGN from a Lichess game or study link, any PGN URL, or a local `.pgn` file |
+| `/chess export <path>` | Write every saved game to one PGN file |
+| `/chess help` | This list |
 
 An unfinished casual game survives a restart. It comes back paused, and the time you were away doesn't count.
 
@@ -127,7 +155,7 @@ FIDE Laws of Chess, using [chess.js](https://github.com/jhlywa/chess.js) for mov
 
 2 to 8 players, any mix of you and Claude models. Single or double round-robin (double plays each pairing twice, colours swapped), with colours balanced. Standings score 1, ½ and 0, broken by Sonneborn-Berger, then head-to-head, then wins.
 
-Claude costs money, so tournaments have a budget cap ($5 by default). When Claude's spend reaches it the tournament pauses. Raise the cap in settings and resume. Before you start, you get an estimate based on what each model and effort has cost you so far.
+Claude costs money, so tournaments have a budget cap ($5 by default). The tournament pauses once Claude's spend reaches it. Spend is checked before each Claude call, moves and draw offers alike, so only a call already under way can take it past the cap. Raise the cap in settings and resume. Before you start, you get an estimate based on what each model and effort has cost you so far.
 
 ## Replays
 
@@ -139,6 +167,10 @@ You can also search for games online:
 - **Chess.com** gives you a player's most recent month of games.
 
 One import adds at most 30 games and never the same game twice. Chess960 and games set up from a custom position are skipped, since a replay always starts from the normal opening position.
+
+## Known issues
+
+- **herdr: board clicks don't register.** A click never reaches the board; the likely cause, unconfirmed, is that Claude Code switches to pixel mouse reporting while the board is shown and herdr doesn't pass those reports through. Double-clicks select text instead, and since the pane never takes the keyboard, hotkeys land in Claude's prompt. Run chessus outside herdr, or drive it from the chat: `/chess keys` lists what the pane shows, `/chess key` and `/chess set` work it, and `/chess move e4` plays.
 
 ## Develop
 
