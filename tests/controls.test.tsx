@@ -326,7 +326,7 @@ test("Claude's spend is priced from each reply's tokens, not the session total",
   await ui.press({ key: 'start' })
   await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
-  expect(await ui.find({ type: 'Text', text: /^Claude \$0\.020 · no cap$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.020 · no cap$/ })).toBeDefined()
 })
 
 test('Claude spend sits under the game keys: casual games say no cap, tournament games show the cap', async ($, on) => {
@@ -335,7 +335,7 @@ test('Claude spend sits under the game keys: casual games say no cap, tournament
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  expect(await ui.find({ type: 'Text', text: /^Claude \$0\.000 · no cap$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.000 · no cap$/ })).toBeDefined()
   await ui.press({ key: 'resign' })
   await ui.press({ key: 'resign-yes' })
   await tournamentSetup(ui)
@@ -344,7 +344,7 @@ test('Claude spend sits under the game keys: casual games say no cap, tournament
   await ui.press({ key: 'add' })
   await ui.press({ key: 'start-tournament' })
   await clock.advance(100)
-  expect(await ui.find({ type: 'Text', text: /^Claude \$0\.00 \/ \$5 cap$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Claude est\. \$0\.00 \/ \$5 cap$/ })).toBeDefined()
   await ui.press({ key: 'nav-settings' })
   expect(await ui.find({ type: 'Text', text: /^Claude \$/ })).toBeUndefined()
 })

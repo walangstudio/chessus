@@ -17,6 +17,10 @@ It's a mod: a plugin built on Claude Code's function hooks. The board lives in a
 
 - The board draws in the terminal and in Claude Desktop's Code tab. Mobile and VS Code get the move list only.
 
+## Cost
+
+> **Experimental. Use at your own risk.** Every Claude move is a model call billed to your account. The spend chessus! shows is an estimate at Anthropic's API list prices (or your managed `modelPricing` rates). It is not your bill and can differ from it. On a Pro or Max subscription, calls may count against your usage limits or extra usage. The tournament cap pauses on the estimate, not on real charges. Check actual cost and usage in your Anthropic Console or claude.ai account. walangstudio is not responsible for charges or usage incurred.
+
 ## Install
 
 ```

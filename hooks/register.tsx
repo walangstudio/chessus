@@ -950,8 +950,8 @@ export const register: Register = on => {
     // The last game of a finished tournament still shows that tournament's total against its cap.
     const hasClaude = !!g && (g.white.kind === 'claude' || g.black.kind === 'claude')
     const spend = view.screen !== 'game' || view.review || !g || !hasClaude ? null
-      : tourGame ? `Claude $${tourGame.spentUsd.toFixed(2)} / $${tourGame.budgetUsd} cap`
-        : `Claude $${g.spentUsd.toFixed(3)} · no cap`
+      : tourGame ? `Claude est. $${tourGame.spentUsd.toFixed(2)} / $${tourGame.budgetUsd} cap`
+        : `Claude est. $${g.spentUsd.toFixed(3)} · no cap`
     const nav = (
       <Box width="100%">
         {tabs.map((tab, i) => (
@@ -1124,7 +1124,7 @@ export const register: Register = on => {
       const current = t.current !== null ? t.pairings[t.current] : undefined
       return page(
         <Text bold color="yellow">{`TOURNAMENT #${t.id} · ${done}/${t.pairings.length} games played · ${t.status === 'paused' ? 'PAUSED' : 'RUNNING'}`}</Text>,
-        <Text dimColor>{`Claude spend $${t.spentUsd.toFixed(2)} of $${t.budgetUsd} cap`}</Text>,
+        <Text dimColor>{`Claude spend est. $${t.spentUsd.toFixed(2)} of $${t.budgetUsd} cap`}</Text>,
         <Text dimColor>{'#  Player                  P   W  D  L  Pts   SB'}</Text>,
         ...table.map((r, i) => (
           <Text key={`row-${r.entrant}`}>{`${String(i + 1).padEnd(3)}${nameOf(t.entrants[r.entrant]!).padEnd(24)}${String(r.played).padEnd(4)}${String(r.wins).padEnd(3)}${String(r.draws).padEnd(3)}${String(r.losses).padEnd(3)}${String(r.points).padEnd(6)}${r.sb.toFixed(2)}`}</Text>

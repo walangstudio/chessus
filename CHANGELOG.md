@@ -12,7 +12,8 @@
 - The move box under the board is gone: click a piece then its target, or play `/chess move e4` from the chat.
 - `/chess` runs at once, even while Claude is mid-reply.
 - Resigning, and the pane's confirmations reached from the chat, ask in Claude Code's yes/no picker.
-- README: quick start, commands grouped, a Known issues section (herdr clicks).
+- README: quick start, commands grouped, a Known issues section (herdr clicks), and a Cost notice: spend is an experimental estimate, not your bill.
+- Claude's spend in the pane reads "est.".
 
 ### Fixed
 - Claude's spend stayed at $0 from Claude Code 2.1.292: the session cost it was read from stopped moving with chessus's model calls. Each reply is now priced from its own tokens, so a chat turn running alongside no longer leaks into it either. The $0 samples it recorded are dropped from the tournament estimate.
