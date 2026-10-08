@@ -113,21 +113,6 @@ test('clicks map to squares in both orientations and every size, and the promoti
   }
 })
 
-test('moves can be typed when clicks never reach the board: SAN, UCI, and a clear note for a bad one', async ($, on) => {
-  const clock = engine(on, scripted(['e5', 'Nc6']))
-  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
-  await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'Ke2' })
-  expect(await ui.find({ type: 'Text', text: /"Ke2" is not a legal move here\. Legal: .*Nf3/ })).toBeDefined()
-  await ui.input({ key: 'move', text: 'e4' })
-  for (let i = 0; i < 4; i++) await clock.advance(500)
-  await ui.input({ key: 'move', text: 'g1f3' })
-  for (let i = 0; i < 4; i++) await clock.advance(500)
-  for (const san of ['e4', 'e5', 'Nf3', 'Nc6']) expect(await ui.find({ type: 'Text', text: new RegExp(`^${san} `) })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Your move \((White|Black)\)$/ })).toBeDefined()
-})
-
 test('the pane has its own close button', async ($, on) => {
   engine(on, scripted([]))
   const closed: string[] = []

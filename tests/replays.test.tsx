@@ -63,13 +63,46 @@ test('starting a casual game over one in progress asks first', async ($, on) => 
   await $.session.start(START)
   const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
   await ui.press({ key: 'start' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   await ui.press({ key: 'nav-setup' })
   await ui.press({ key: 'start' })
-  expect(await ui.find({ type: 'Text', text: /Start a new game\? The current one goes to replays as unfinished/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Start a new game\? The current one:/ })).toBeDefined()
   await ui.press({ key: 'replace-no' })
   await ui.press({ key: 'resume-game' })
   expect(await ui.find({ type: 'Text', text: /^e4 / })).toBeDefined()
+})
+
+test('keeping the game in progress makes it resumable from replays when a new game starts', async ($, on) => {
+  engine(on, scripted(['e5']))
+  await $.session.start(START)
+  const ui = await $.ui.mount({ plugin: 'chessus', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'start' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  await ui.press({ key: 'nav-setup' })
+  await ui.press({ key: 'start' })
+  await ui.press({ key: 'replace-keep' })
+  expect(await ui.find({ type: 'Text', text: /^Your move \(White\)$/ })).toBeDefined()
+  await ui.press({ key: 'nav-library' })
+  expect(await ui.find({ type: 'Button', text: /saved to resume/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /abandoned/ })).toBeUndefined()
+  await ui.press({ key: 'lib-0' })
+  expect(await ui.find({ key: 'resume-saved' })).toBeDefined()
+})
+
+test('/chess <model> over a game in progress asks: cancel keeps it, abandon replaces it', async ($, on) => {
+  engine(on, scripted(['e5']))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  let pick = 'Cancel'
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
+    const q = e.questions[0]!
+    return { result: { questions: e.questions, answers: { [q.question]: pick } } }
+  })
+  await $.session.start(START)
+  await $.command.run({ ...RUN, args: 'haiku low' })
+  await $.command.run({ ...RUN, args: 'move e4' })
+  expect((await $.command.run({ ...RUN, args: 'sonnet' })).text).toMatch(/Kept the game in progress/)
+  pick = 'Abandon it'
+  expect((await $.command.run({ ...RUN, args: 'sonnet' })).text).toMatch(/New game: you \(White\) vs Sonnet/)
 })
 
 test('/chess tournament opens the tournament form when none is running', async ($, on) => {
@@ -123,7 +156,7 @@ test('a saved game can be deleted after a confirm; the bundled classics cannot',
   await ui.press({ key: 'nav-setup' })
   await ui.press({ key: 'start' })
   for (const move of ['e4', 'd4', 'Qh5#']) {
-    await ui.input({ key: 'move', text: move })
+    await $.command.run({ ...RUN, args: `move ${move}` })
     for (let i = 0; i < 4; i++) await clock.advance(500)
   }
   await ui.press({ key: 'nav-library' })
@@ -179,7 +212,7 @@ test('game options reset to the defaults once the game starts; delete all keeps 
   expect(await ui.find({ type: 'Button', key: 'opt-tc-value', text: /Untimed/ })).toBeDefined()
   expect(await ui.find({ key: 'opts-reset' })).toBeUndefined()
   await ui.press({ key: 'nav-game' })
-  await ui.input({ key: 'move', text: 'e4' })
+  await $.command.run({ ...RUN, args: 'move e4' })
   for (let i = 0; i < 4; i++) await clock.advance(500)
   await ui.press({ key: 'save' })
   await ui.press({ key: 'nav-library' })

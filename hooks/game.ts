@@ -1,13 +1,37 @@
 import type { Color, Effort, Game, Result, RulesPreset, SavedGame, Side, TimeControl } from '../types'
 import { Chess, DEFAULT_POSITION } from './vendor/chess.js'
 
+// price: first-party API $/MTok for input, output, cache read, 5-minute cache write. Update when Anthropic reprices.
 export const MODELS = [
-  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
-  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
-  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-]
+  { value: 'claude-fable-5-1', label: 'Fable 5.1', price: [10, 50, 0.25, 12.5] },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5', price: [4, 20, 0.2, 5] },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', price: [2, 10, 0.2, 2.5] },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', price: [1, 5, 0.1, 1.25] },
+] as const
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+
+type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+
+type Rates = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+// Claude Code's `modelPricing` setting, as $.settings.read() hands it: contracted rates per model ID, and a flat multiplier.
+// An override named by a bare ID (claude-haiku-4-5) also covers its dated spelling (claude-haiku-4-5-20251001).
+// ponytail: provider spellings (Bedrock, Vertex ARNs) of a built-in ID are not matched; chessus only asks first-party IDs.
+export const contractedRates = (setting: unknown, model: string): { rates?: Rates; multiplier: number } => {
+  const s = (setting ?? {}) as { multiplier?: unknown; overrides?: Record<string, unknown> }
+  const m = typeof s.multiplier === 'number' && s.multiplier > 0 && s.multiplier <= 1 ? s.multiplier : 1
+  const id = model.toLowerCase()
+  const row = Object.entries(s.overrides ?? {}).find(([k]) => id === k.toLowerCase() || id === `${k.toLowerCase()}-${id.slice(-8)}` && /^\d{8}$/.test(id.slice(-8)))?.[1] as Partial<Rates> | undefined
+  const isValid = !!row && (['input', 'output', 'cacheRead', 'cacheWrite'] as const).every(k => typeof row[k] === 'number' && row[k] >= 0 && row[k] <= 10_000)
+  return { rates: isValid ? (row as Rates) : undefined, multiplier: m }
+}
+
+export const priceUsd = (model: string, u: Usage, pricing?: unknown) => {
+  const { rates, multiplier } = contractedRates(pricing, model)
+  const [input, output, read, write] = rates ? [rates.input, rates.output, rates.cacheRead, rates.cacheWrite] : MODELS.find(m => m.value === model)?.price ?? [0, 0, 0, 0]
+  return (multiplier * (u.input_tokens * input + u.output_tokens * output + u.cache_read_input_tokens * read + u.cache_creation_input_tokens * write)) / 1e6
+}
 
 const MIN = 60_000
 export const TIME_CONTROLS: TimeControl[] = [

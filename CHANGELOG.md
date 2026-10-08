@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2] - 2026-10-08
+
+### Added
+- `/chess help`, `/chess keys`, `/chess key <key>` and `/chess set <name> <value>`: list and drive the pane's keys, pickers and fields from the chat.
+- Replacing a game in progress (new game, tournament, resume, `/chess <model>`) asks: abandon it, keep it to resume later, or cancel.
+
+- Claude's spend follows Claude Code's managed `modelPricing` setting (contracted rates and multiplier) when one is set, list price otherwise.
+
+### Changed
+- The move box under the board is gone: click a piece then its target, or play `/chess move e4` from the chat.
+- `/chess` runs at once, even while Claude is mid-reply.
+- Resigning, and the pane's confirmations reached from the chat, ask in Claude Code's yes/no picker.
+- README: quick start, commands grouped, a Known issues section (herdr clicks).
+
+### Fixed
+- Claude's spend stayed at $0 from Claude Code 2.1.292: the session cost it was read from stopped moving with chessus's model calls. Each reply is now priced from its own tokens, so a chat turn running alongside no longer leaks into it either. The $0 samples it recorded are dropped from the tournament estimate.
+- Keeping a game to resume on a full store stops what was starting, instead of abandoning the game and its older snapshot.
+
 ## [0.1.1] - 2026-10-07
 
 ### Changed
